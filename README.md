@@ -110,6 +110,20 @@ Notes:
 - Docker Compose is for local/VPS only; Vercel needs external DB/Redis.
 - In `SERVERLESS_MODE`, polling and APScheduler are disabled automatically.
 
+### Neon + Upstash quick setup
+
+1. Create a Neon project and copy the **pooled** Postgres connection string.
+2. Use async driver format in env:
+   - `postgresql://...` or `postgres://...` also works now (auto-normalized), but recommended:
+   - `DATABASE_URL=postgresql+asyncpg://USER:PASSWORD@HOST/DB?ssl=require`
+3. Create an Upstash Redis database and copy the Redis TCP URL (not REST URL):
+   - `REDIS_URL=rediss://default:PASSWORD@HOST:6379`
+4. Put both into Vercel Project Settings -> Environment Variables.
+5. Run migrations once against Neon before production traffic:
+```bash
+alembic upgrade head
+```
+
 ## Environment variables
 
 Required:
