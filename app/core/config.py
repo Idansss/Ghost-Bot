@@ -1,0 +1,93 @@
+from functools import lru_cache
+from typing import List
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    app_name: str = "ghost-alpha-bot"
+    env: str = "dev"
+    log_level: str = "INFO"
+
+    host: str = "0.0.0.0"
+    port: int = 8000
+
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_use_webhook: bool = False
+    telegram_webhook_url: str = ""
+    telegram_webhook_path: str = "/telegram/webhook"
+    telegram_webhook_secret: str = ""
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    openai_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL")
+    openai_max_output_tokens: int = Field(default=350, alias="OPENAI_MAX_OUTPUT_TOKENS")
+    openai_temperature: float = Field(default=0.7, alias="OPENAI_TEMPERATURE")
+    openai_router_min_confidence: float = Field(default=0.6, alias="OPENAI_ROUTER_MIN_CONFIDENCE")
+
+    database_url: str = "postgresql+asyncpg://ghost:ghost@postgres:5432/ghost_bot"
+    redis_url: str = "redis://redis:6379/0"
+
+    binance_base_url: str = "https://api.binance.com"
+    binance_futures_base_url: str = "https://fapi.binance.com"
+    coingecko_base_url: str = "https://api.coingecko.com/api/v3"
+
+    cryptopanic_api_key: str = ""
+    news_rss_feeds: str = (
+        "https://www.coindesk.com/arc/outboundfeeds/rss/;"
+        "https://cointelegraph.com/rss;"
+        "https://www.theblock.co/rss.xml"
+    )
+
+    solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
+    tron_api_url: str = "https://api.trongrid.io"
+    trongrid_api_key: str = ""
+
+    request_rate_limit_per_minute: int = 20
+    wallet_scan_limit_per_hour: int = 10
+    alerts_create_limit_per_day: int = 10
+
+    alert_check_interval_sec: int = 30
+    alert_cooldown_min: int = 30
+    admin_chat_ids: str = ""
+    giveaway_min_participants: int = 2
+    analysis_fast_mode: bool = Field(default=True, alias="ANALYSIS_FAST_MODE")
+    analysis_default_timeframes: str = Field(default="1h", alias="ANALYSIS_DEFAULT_TIMEFRAMES")
+    analysis_include_derivatives_default: bool = Field(default=False, alias="ANALYSIS_INCLUDE_DERIVATIVES_DEFAULT")
+    analysis_include_news_default: bool = Field(default=False, alias="ANALYSIS_INCLUDE_NEWS_DEFAULT")
+    analysis_request_timeout_sec: float = Field(default=8.0, alias="ANALYSIS_REQUEST_TIMEOUT_SEC")
+
+    default_timeframe: str = "1h"
+    include_btc_eth_watchlist: bool = True
+
+    test_mode: bool = False
+    mock_prices: str = ""
+
+    def rss_feed_list(self) -> List[str]:
+        return [x.strip() for x in self.news_rss_feeds.split(";") if x.strip()]
+
+    def admin_ids_list(self) -> List[int]:
+        out: List[int] = []
+        for item in self.admin_chat_ids.split(","):
+            raw = item.strip()
+            if not raw:
+                continue
+            try:
+                out.append(int(raw))
+            except ValueError:
+                continue
+        return out
+
+    def analysis_default_timeframes_list(self) -> List[str]:
+        out: List[str] = []
+        for item in self.analysis_default_timeframes.split(","):
+            tf = item.strip()
+            if tf:
+                out.append(tf)
+        return out or ["1h"]
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()

@@ -1,0 +1,249 @@
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+from contextlib import asynccontextmanager
+
+from aiogram import Bot, Dispatcher
+from aiogram.types import Update
+from fastapi import FastAPI, HTTPException, Request
+from sqlalchemy import text
+
+from app.adapters.derivatives import DerivativesAdapter
+from app.adapters.llm import LLMClient
+from app.adapters.news_sources import NewsSourcesAdapter
+from app.adapters.ohlcv import OHLCVAdapter
+from app.adapters.prices import PriceAdapter
+from app.adapters.solana import SolanaAdapter
+from app.adapters.tron import TronAdapter
+from app.bot.handlers import init_handlers, router
+from app.core.cache import RedisCache
+from app.core.config import Settings, get_settings
+from app.core.container import ServiceHub
+from app.core.http import ResilientHTTPClient
+from app.core.logging import setup_logging
+from app.core.rate_limit import RateLimiter
+from app.db.session import AsyncSessionLocal
+from app.services.alerts import AlertsService
+from app.services.audit import AuditService
+from app.services.correlation import CorrelationService
+from app.services.cycles import CyclesService
+from app.services.discovery import DiscoveryService
+from app.services.giveaway import GiveawayService
+from app.services.market_analysis import MarketAnalysisService
+from app.services.news import NewsService
+from app.services.rsi_scanner import RSIScannerService
+from app.services.setup_review import SetupReviewService
+from app.services.trade_verify import TradeVerifyService
+from app.services.users import UserService
+from app.services.wallet_scan import WalletScanService
+from app.services.watchlist import WatchlistService
+from app.workers.scheduler import WorkerScheduler
+
+logger = logging.getLogger(__name__)
+
+
+def build_hub(settings: Settings, bot: Bot, cache: RedisCache, http: ResilientHTTPClient) -> ServiceHub:
+    rate_limiter = RateLimiter(cache)
+    llm_client = None
+    if settings.openai_api_key:
+        llm_client = LLMClient(
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            max_output_tokens=settings.openai_max_output_tokens,
+            temperature=settings.openai_temperature,
+        )
+
+    price_adapter = PriceAdapter(
+        http=http,
+        cache=cache,
+        binance_base=settings.binance_base_url,
+        coingecko_base=settings.coingecko_base_url,
+        test_mode=settings.test_mode,
+        mock_prices=settings.mock_prices,
+    )
+    ohlcv_adapter = OHLCVAdapter(http=http, cache=cache, binance_base=settings.binance_base_url, coingecko_base=settings.coingecko_base_url)
+    deriv_adapter = DerivativesAdapter(http=http, cache=cache, futures_base=settings.binance_futures_base_url)
+    news_adapter = NewsSourcesAdapter(http=http, cache=cache, rss_feeds=settings.rss_feed_list(), cryptopanic_key=settings.cryptopanic_api_key)
+    solana_adapter = SolanaAdapter(http=http, rpc_url=settings.solana_rpc_url)
+    tron_adapter = TronAdapter(http=http, api_url=settings.tron_api_url, api_key=settings.trongrid_api_key)
+
+    news_service = NewsService(news_adapter)
+    rsi_scanner_service = RSIScannerService(http=http, cache=cache, ohlcv_adapter=ohlcv_adapter, binance_base=settings.binance_base_url)
+    discovery_service = DiscoveryService(
+        http=http,
+        cache=cache,
+        price_adapter=price_adapter,
+        binance_base=settings.binance_base_url,
+        coingecko_base=settings.coingecko_base_url,
+    )
+    giveaway_service = GiveawayService(
+        db_factory=AsyncSessionLocal,
+        admin_chat_ids=settings.admin_ids_list(),
+        min_participants=settings.giveaway_min_participants,
+    )
+
+    return ServiceHub(
+        bot=bot,
+        bot_username=None,
+        llm_client=llm_client,
+        cache=cache,
+        rate_limiter=rate_limiter,
+        user_service=UserService(AsyncSessionLocal),
+        audit_service=AuditService(AsyncSessionLocal),
+        # analysis service defaults tuned for low latency; deep data can still be requested on demand
+        analysis_service=MarketAnalysisService(
+            price_adapter,
+            ohlcv_adapter,
+            deriv_adapter,
+            news_service,
+            fast_mode=settings.analysis_fast_mode,
+            default_timeframes=settings.analysis_default_timeframes_list(),
+            include_derivatives_default=settings.analysis_include_derivatives_default,
+            include_news_default=settings.analysis_include_news_default,
+            request_timeout_sec=settings.analysis_request_timeout_sec,
+        ),
+        alerts_service=AlertsService(
+            db_factory=AsyncSessionLocal,
+            cache=cache,
+            price_adapter=price_adapter,
+            alerts_limit_per_day=settings.alerts_create_limit_per_day,
+            cooldown_minutes=settings.alert_cooldown_min,
+        ),
+        wallet_service=WalletScanService(db_factory=AsyncSessionLocal, solana=solana_adapter, tron=tron_adapter, price=price_adapter),
+        trade_verify_service=TradeVerifyService(ohlcv_adapter),
+        setup_review_service=SetupReviewService(ohlcv_adapter),
+        watchlist_service=WatchlistService(
+            http=http,
+            news_adapter=news_adapter,
+            binance_base=settings.binance_base_url,
+            coingecko_base=settings.coingecko_base_url,
+            include_btc_eth=settings.include_btc_eth_watchlist,
+        ),
+        news_service=news_service,
+        cycles_service=CyclesService(ohlcv_adapter),
+        correlation_service=CorrelationService(ohlcv_adapter, price_adapter),
+        rsi_scanner_service=rsi_scanner_service,
+        discovery_service=discovery_service,
+        giveaway_service=giveaway_service,
+    )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    setup_logging(settings.log_level)
+
+    if not settings.telegram_bot_token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
+
+    cache = RedisCache(settings.redis_url)
+    http = ResilientHTTPClient()
+
+    bot = Bot(token=settings.telegram_bot_token)
+    dp = Dispatcher()
+
+    hub = build_hub(settings, bot, cache, http)
+    try:
+        me = await bot.get_me()
+        hub.bot_username = me.username.lower() if me.username else None
+    except Exception:  # noqa: BLE001
+        hub.bot_username = None
+    init_handlers(hub)
+    dp.include_router(router)
+
+    scheduler = WorkerScheduler(hub)
+    scheduler.start()
+
+    polling_task = None
+    if settings.telegram_use_webhook:
+        webhook_url = settings.telegram_webhook_url.rstrip("/") + settings.telegram_webhook_path
+        await bot.set_webhook(webhook_url, secret_token=settings.telegram_webhook_secret or None)
+        logger.info("webhook_configured", extra={"event": "webhook", "url": webhook_url})
+    else:
+        polling_task = asyncio.create_task(dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types()))
+
+    app.state.settings = settings
+    app.state.hub = hub
+    app.state.dp = dp
+    app.state.bot = bot
+    app.state.http = http
+    app.state.cache = cache
+    app.state.scheduler = scheduler
+    app.state.polling_task = polling_task
+
+    try:
+        yield
+    finally:
+        scheduler.stop()
+        if polling_task:
+            polling_task.cancel()
+            with contextlib.suppress(Exception):
+                await polling_task
+        await bot.session.close()
+        await http.close()
+        await cache.close()
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()
+    app = FastAPI(title="Ghost Alpha Bot", version="1.0.0", lifespan=lifespan)
+
+    @app.get("/health")
+    async def health() -> dict:
+        return {"status": "ok"}
+
+    @app.get("/ready")
+    async def ready() -> dict:
+        try:
+            async with AsyncSessionLocal() as session:
+                await session.execute(text("SELECT 1"))
+            pong = await app.state.cache.redis.ping()
+            if not pong:
+                raise RuntimeError("Redis ping failed")
+            return {"status": "ready"}
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post(settings.telegram_webhook_path)
+    async def telegram_webhook(req: Request) -> dict:
+        app_settings = app.state.settings
+        if not app_settings.telegram_use_webhook:
+            raise HTTPException(status_code=400, detail="Webhook mode disabled")
+
+        if app_settings.telegram_webhook_secret:
+            secret = req.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+            if secret != app_settings.telegram_webhook_secret:
+                raise HTTPException(status_code=403, detail="Invalid secret")
+
+        payload = await req.json()
+        update = Update.model_validate(payload)
+        await app.state.dp.feed_update(app.state.bot, update)
+        return {"ok": True}
+
+    @app.post("/test/mock-price")
+    async def mock_price(payload: dict) -> dict:
+        settings = app.state.settings
+        if not settings.test_mode:
+            raise HTTPException(status_code=403, detail="TEST_MODE disabled")
+
+        symbol = payload.get("symbol")
+        price = payload.get("price")
+        if not symbol or price is None:
+            raise HTTPException(status_code=400, detail="symbol and price required")
+
+        await app.state.hub.analysis_service.price_adapter.set_mock_price(symbol, float(price))
+        return {"ok": True, "symbol": symbol.upper(), "price": float(price)}
+
+    return app
+
+
+app = create_app()
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    settings = get_settings()
+    uvicorn.run("app.main:app", host=settings.host, port=settings.port, reload=False)
