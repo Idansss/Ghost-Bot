@@ -35,6 +35,7 @@ from app.db.session import AsyncSessionLocal
 router = Router()
 _settings = get_settings()
 _hub: ServiceHub | None = None
+_ALLOWED_OPENAI_CHAT_MODES = {"hybrid", "tool_first", "llm_first", "chat_only"}
 
 
 def init_handlers(hub: ServiceHub) -> None:
@@ -81,6 +82,42 @@ def _require_hub() -> ServiceHub:
     return _hub
 
 
+def _openai_chat_mode() -> str:
+    mode = str(_settings.openai_chat_mode or "hybrid").strip().lower()
+    if mode not in _ALLOWED_OPENAI_CHAT_MODES:
+        return "hybrid"
+    return mode
+
+
+async def _get_chat_history(chat_id: int) -> list[dict[str, str]]:
+    hub = _require_hub()
+    payload = await hub.cache.get_json(f"llm:history:{chat_id}")
+    if not isinstance(payload, list):
+        return []
+    out: list[dict[str, str]] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role", "")).strip().lower()
+        content = str(item.get("content", "")).strip()
+        if role in {"user", "assistant"} and content:
+            out.append({"role": role, "content": content})
+    return out
+
+
+async def _append_chat_history(chat_id: int, role: str, content: str) -> None:
+    role = role.strip().lower()
+    content = content.strip()
+    if role not in {"user", "assistant"} or not content:
+        return
+    history = await _get_chat_history(chat_id)
+    history.append({"role": role, "content": content})
+    turns = max(int(_settings.openai_chat_history_turns), 1)
+    history = history[-(turns * 2) :]
+    hub = _require_hub()
+    await hub.cache.set_json(f"llm:history:{chat_id}", history, ttl=60 * 60 * 24 * 7)
+
+
 def _mentions_bot(text: str, bot_username: str | None) -> bool:
     if not bot_username:
         return False
@@ -110,7 +147,7 @@ async def _check_req_limit(chat_id: int) -> bool:
     return result.allowed
 
 
-async def _llm_fallback_reply(user_text: str, settings: dict | None = None) -> str | None:
+async def _llm_fallback_reply(user_text: str, settings: dict | None = None, chat_id: int | None = None) -> str | None:
     hub = _require_hub()
     if not hub.llm_client:
         return None
@@ -131,11 +168,16 @@ async def _llm_fallback_reply(user_text: str, settings: dict | None = None) -> s
         f"User message: {cleaned}\n"
         "Keep answer concise. If this is a crypto setup request that lacks details, ask one short follow-up question."
     )
+    history = await _get_chat_history(chat_id) if chat_id is not None else []
     try:
-        reply = await hub.llm_client.reply(prompt)
+        reply = await hub.llm_client.reply(prompt, history=history)
     except Exception:  # noqa: BLE001
         return None
-    return reply.strip() if reply and reply.strip() else None
+    final = reply.strip() if reply and reply.strip() else None
+    if final and chat_id is not None:
+        await _append_chat_history(chat_id, "user", cleaned)
+        await _append_chat_history(chat_id, "assistant", final)
+    return final
 
 
 def _parse_duration_to_seconds(raw: str) -> int | None:
@@ -213,12 +255,12 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
         return False
 
     if intent == "smalltalk":
-        llm_reply = await _llm_fallback_reply(raw_text, settings)
+        llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
         await message.answer(llm_reply or smalltalk_reply(settings))
         return True
 
     if intent == "general_chat":
-        llm_reply = await _llm_fallback_reply(raw_text, settings)
+        llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
         if llm_reply:
             await message.answer(llm_reply)
             return True
@@ -277,6 +319,14 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
             symbol=symbol,
         )
         await message.answer(rsi_scan_template(payload))
+        return True
+
+    if intent == "watchlist":
+        count = max(1, min(_as_int(params.get("count"), 5), 20))
+        direction_raw = str(params.get("direction") or "").strip().lower()
+        direction = direction_raw if direction_raw in {"long", "short"} else None
+        payload = await hub.watchlist_service.build_watchlist(count=count, direction=direction)
+        await message.answer(watchlist_template(payload))
         return True
 
     if intent == "alert_create":
@@ -967,8 +1017,30 @@ async def route_text(message: Message) -> None:
 
     parsed = parse_message(text)
     settings = await hub.user_service.get_settings(chat_id)
+    chat_mode = _openai_chat_mode()
 
-    if parsed.intent == Intent.UNKNOWN or (parsed.requires_followup and parsed.intent == Intent.UNKNOWN):
+    if hub.llm_client and chat_mode == "chat_only":
+        llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
+        if llm_reply:
+            await message.answer(llm_reply)
+            return
+        await message.answer("OpenAI is temporarily unavailable. Try again in a few seconds.")
+        return
+
+    if hub.llm_client and chat_mode == "llm_first":
+        routed = await _llm_route_message(text)
+        if routed:
+            try:
+                if await _handle_routed_intent(message, settings, routed):
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+        llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
+        if llm_reply:
+            await message.answer(llm_reply)
+            return
+
+    if chat_mode in {"hybrid", "tool_first"} and (parsed.intent == Intent.UNKNOWN or (parsed.requires_followup and parsed.intent == Intent.UNKNOWN)):
         routed = await _llm_route_message(text)
         if routed:
             try:
@@ -979,7 +1051,7 @@ async def route_text(message: Message) -> None:
 
     if parsed.requires_followup:
         if parsed.intent == Intent.UNKNOWN:
-            llm_reply = await _llm_fallback_reply(text, settings)
+            llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
             if llm_reply:
                 await message.answer(llm_reply)
                 return
@@ -1086,7 +1158,7 @@ async def route_text(message: Message) -> None:
             return
 
         if parsed.intent == Intent.SMALLTALK:
-            llm_reply = await _llm_fallback_reply(raw_text, settings)
+            llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
             await message.answer(llm_reply or smalltalk_reply(settings))
             return
 
@@ -1219,7 +1291,7 @@ async def route_text(message: Message) -> None:
             return
 
         if parsed.intent == Intent.UNKNOWN:
-            llm_reply = await _llm_fallback_reply(text, settings)
+            llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
             await message.answer(llm_reply or parsed.followup_question or "Need one detail to continue.")
             return
 

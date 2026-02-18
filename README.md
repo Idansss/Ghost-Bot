@@ -151,6 +151,8 @@ Primary runtime:
 - `OPENAI_MAX_OUTPUT_TOKENS` (default `350`)
 - `OPENAI_TEMPERATURE` (default `0.7`)
 - `OPENAI_ROUTER_MIN_CONFIDENCE` (default `0.6`, LLM intent router execution threshold)
+- `OPENAI_CHAT_MODE` (default `hybrid`; options: `tool_first`, `hybrid`, `llm_first`, `chat_only`)
+- `OPENAI_CHAT_HISTORY_TURNS` (default `12`, short memory window for chat continuity)
 - `RSI_SCAN_UNIVERSE_SIZE` (default `500`)
 - `RSI_SCAN_SCAN_TIMEFRAMES` (default `15m,1h,4h,1d`)
 - `RSI_SCAN_CONCURRENCY` (default `12`)
@@ -235,7 +237,14 @@ Behavior/test mode:
 - `/join`
 
 Natural language is fully supported, no strict command requirement.
-When configured with `OPENAI_API_KEY`, an LLM JSON intent router handles free-form phrasing and maps to deterministic tools (analysis/alerts/news/scans/etc.). Low-confidence routes fall back to normal chat replies.
+When configured with `OPENAI_API_KEY`, an LLM JSON intent router handles free-form phrasing and maps to deterministic tools (analysis/alerts/news/scans/etc.).
+
+OpenAI response strategy is configurable:
+
+- `OPENAI_CHAT_MODE=tool_first`: deterministic parser first, LLM mainly fallback
+- `OPENAI_CHAT_MODE=hybrid`: deterministic + LLM router for unknowns (default)
+- `OPENAI_CHAT_MODE=llm_first`: LLM router first, then LLM chat fallback
+- `OPENAI_CHAT_MODE=chat_only`: every message goes straight to OpenAI chat (ChatGPT-like behavior)
 Analysis uses a fast default path (price + TA) and exposes on-demand detail buttons: `More detail`, `Derivatives`, `News`.
 
 Advanced analysis syntax is supported:

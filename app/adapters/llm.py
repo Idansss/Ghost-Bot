@@ -27,7 +27,7 @@ Return ONLY valid JSON. No markdown. No extra text.
 Given the user's message, produce:
 {
   "intent": one of [
-    "smalltalk","news_digest","watch_asset","market_analysis","rsi_scan",
+    "smalltalk","news_digest","watch_asset","market_analysis","watchlist","rsi_scan",
     "alert_create","alert_list","alert_delete","alert_clear",
     "pair_find","price_guess","setup_review",
     "giveaway_start","giveaway_join","giveaway_end","giveaway_reroll","giveaway_status",
@@ -43,6 +43,7 @@ Rules:
 - If user asks for OpenAI/ChatGPT/GPT/Codex updates, set intent="news_digest" and include params {"topic":"openai","mode":"openai","limit":6}.
 - If user says "watch btc" or "btc 4h", set intent="watch_asset" with {"symbol":"BTC","timeframe":"4h"} (default timeframe "1h" if missing).
 - If user says "<symbol> long/short", set intent="market_analysis" with {"symbol":"<symbol>","side":"long|short"} and optional timeframe.
+- If user asks for "coins to watch", "coins to short", or "coins to long", set intent="watchlist" with params {"count":5, "direction":"short|long"} as applicable.
 - If user says "alert me when X hits Y", set intent="alert_create" with {"symbol":"X","operator":">=" or "<=","price":Y}.
 - If user says "list alerts", set intent="alert_list". If "clear/reset alerts", set intent="alert_clear".
 - If user asks to "find pair", use intent="pair_find". If user provides a price and asks possible coins, use "price_guess" with {"price":...,"limit":10}.
@@ -57,6 +58,7 @@ ROUTER_ALLOWED_INTENTS = {
     "news_digest",
     "watch_asset",
     "market_analysis",
+    "watchlist",
     "rsi_scan",
     "alert_create",
     "alert_list",
@@ -126,13 +128,18 @@ class LLMClient:
             return {}
         return payload if isinstance(payload, dict) else {}
 
-    async def reply(self, user_text: str) -> str:
+    async def reply(self, user_text: str, history: list[dict[str, str]] | None = None) -> str:
+        messages: list[dict[str, str]] = [{"role": "system", "content": GHOST_ALPHA_SYSTEM}]
+        for item in history or []:
+            role = str(item.get("role", "")).strip().lower()
+            content = str(item.get("content", "")).strip()
+            if role in {"user", "assistant"} and content:
+                messages.append({"role": role, "content": content})
+        messages.append({"role": "user", "content": user_text})
+
         resp = await self.client.responses.create(
             model=self.model,
-            input=[
-                {"role": "system", "content": GHOST_ALPHA_SYSTEM},
-                {"role": "user", "content": user_text},
-            ],
+            input=messages,
             max_output_tokens=self.max_output_tokens,
             temperature=self.temperature,
         )

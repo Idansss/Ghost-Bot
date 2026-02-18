@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     openai_max_output_tokens: int = Field(default=350, alias="OPENAI_MAX_OUTPUT_TOKENS")
     openai_temperature: float = Field(default=0.7, alias="OPENAI_TEMPERATURE")
     openai_router_min_confidence: float = Field(default=0.6, alias="OPENAI_ROUTER_MIN_CONFIDENCE")
+    openai_chat_mode: str = Field(default="hybrid", alias="OPENAI_CHAT_MODE")
+    openai_chat_history_turns: int = Field(default=12, alias="OPENAI_CHAT_HISTORY_TURNS")
 
     database_url: str = "postgresql+asyncpg://ghost:ghost@postgres:5432/ghost_bot"
     redis_url: str = "redis://redis:6379/0"
