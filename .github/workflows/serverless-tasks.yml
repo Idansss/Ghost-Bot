@@ -1,0 +1,42 @@
+name: Serverless Tasks
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  run-tasks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate required secrets
+        run: |
+          if [ -z "${{ secrets.VERCEL_BASE_URL }}" ]; then
+            echo "Missing secret: VERCEL_BASE_URL"
+            exit 1
+          fi
+
+      - name: Run alerts task
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.VERCEL_BASE_URL }}/tasks/alerts/run"
+
+      - name: Run giveaways task
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "${{ secrets.VERCEL_BASE_URL }}/tasks/giveaways/run"
+
+      - name: Run news warm task every 15 minutes
+        run: |
+          MINUTE=$(date -u +%M)
+          MOD=$((10#$MINUTE % 15))
+          if [ "$MOD" -eq 0 ]; then
+            curl -fsS -X POST \
+              -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+              "${{ secrets.VERCEL_BASE_URL }}/tasks/news/warm"
+          else
+            echo "Skipping news warm this run (minute=$MINUTE)"
+          fi
+

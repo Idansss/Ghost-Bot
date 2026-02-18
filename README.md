@@ -101,10 +101,13 @@ Webhook mode:
 ```bash
 alembic upgrade head
 ```
-5. Deploy. Vercel cron (from `vercel.json`) triggers:
-- `/tasks/alerts/run` every minute
-- `/tasks/giveaways/run` every minute
-- `/tasks/news/warm` every 15 minutes
+5. Deploy. For Hobby plan (no sub-daily Vercel cron), use the included GitHub Actions scheduler:
+- Add GitHub repo secret `VERCEL_BASE_URL=https://<your-vercel-domain>`
+- Add GitHub repo secret `CRON_SECRET=<same value as Vercel env>`
+- Workflow `.github/workflows/serverless-tasks.yml` runs every 5 minutes and calls:
+  - `/tasks/alerts/run`
+  - `/tasks/giveaways/run`
+  - `/tasks/news/warm` (every 15 minutes)
 
 Notes:
 - Docker Compose is for local/VPS only; Vercel needs external DB/Redis.

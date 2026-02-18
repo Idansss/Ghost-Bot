@@ -15,19 +15,5 @@
       "src": "/(.*)",
       "dest": "api/index.py"
     }
-  ],
-  "crons": [
-    {
-      "path": "/tasks/alerts/run",
-      "schedule": "*/1 * * * *"
-    },
-    {
-      "path": "/tasks/giveaways/run",
-      "schedule": "*/1 * * * *"
-    },
-    {
-      "path": "/tasks/news/warm",
-      "schedule": "*/15 * * * *"
-    }
   ]
 }
