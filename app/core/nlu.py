@@ -47,6 +47,9 @@ SMALLTALK_RE = re.compile(
     r")\b"
 )
 TIMEFRAME_TOKEN_RE = re.compile(r"\b\d+[mhdwM]\b")
+NEWS_WORD_RE = re.compile(r"\b(news|headline|headlines|update|updates|brief|digest|changelog|release)\b", re.IGNORECASE)
+MACRO_NEWS_RE = re.compile(r"\b(cpi|inflation|fomc|fed|powell|rates?|nfp|jobs?|ppi|macro)\b", re.IGNORECASE)
+OPENAI_NEWS_RE = re.compile(r"\b(openai|chatgpt|gpt|codex|responses?\s+api)\b", re.IGNORECASE)
 
 SUPPORTED_TIMEFRAMES = {
     "1m",
@@ -117,6 +120,15 @@ COMMON_STOPWORDS = {
     "my",
     "alerts",
     "reset",
+    "cpi",
+    "inflation",
+    "fomc",
+    "fed",
+    "macro",
+    "openai",
+    "chatgpt",
+    "gpt",
+    "codex",
 }
 
 
@@ -362,6 +374,56 @@ def parse_setup_levels(text: str) -> tuple[float | None, float | None, list[floa
     return entry, stop, unique_targets
 
 
+def _parse_news_intent(text: str) -> ParsedMessage | None:
+    stripped = text.strip()
+    lower = stripped.lower()
+
+    if not lower:
+        return None
+
+    is_news_command = lower.startswith("/news")
+    has_news_words = bool(NEWS_WORD_RE.search(lower))
+    has_macro = bool(MACRO_NEWS_RE.search(lower))
+    has_openai = bool(OPENAI_NEWS_RE.search(lower))
+    has_today_prompt = any(
+        phrase in lower
+        for phrase in (
+            "what do you have for me today",
+            "what happened today",
+            "latest today",
+            "today brief",
+        )
+    )
+
+    if not (is_news_command or has_news_words or has_today_prompt):
+        if not ((has_macro or has_openai) and ("today" in lower or "latest" in lower)):
+            return None
+
+    topic: str | None = None
+    mode = "crypto"
+
+    if has_openai:
+        topic = "openai"
+        mode = "openai"
+    elif re.search(r"\b(cpi|inflation|consumer price|bls|core cpi)\b", lower):
+        topic = "cpi"
+        mode = "macro"
+    elif has_macro:
+        topic = "macro"
+        mode = "macro"
+    else:
+        symbols = _extract_symbols(stripped)
+        topic = symbols[0] if symbols else "crypto"
+        mode = "crypto"
+
+    limit = 6
+    n_match = re.search(r"\b(\d{1,2})\b", lower)
+    if n_match:
+        limit = max(3, min(int(n_match.group(1)), 10))
+
+    return ParsedMessage(Intent.NEWS, {"topic": topic, "mode": mode, "limit": limit})
+
+
 def parse_message(text: str) -> ParsedMessage:
     stripped = text.strip()
     lower = stripped.lower()
@@ -462,8 +524,9 @@ def parse_message(text: str) -> ParsedMessage:
             return ParsedMessage(Intent.PAIR_FIND, {}, True, "Which coin should I resolve to a tradable pair?")
         return ParsedMessage(Intent.PAIR_FIND, {"query": query})
 
-    if "/news" in lower or "latest news" in lower or "news today" in lower or "what do you have for me today" in lower:
-        return ParsedMessage(Intent.NEWS)
+    parsed_news = _parse_news_intent(stripped)
+    if parsed_news:
+        return parsed_news
 
     if "/cycle" in lower or "cycle check" in lower or "bull market top" in lower or "halving" in lower:
         return ParsedMessage(Intent.CYCLE)

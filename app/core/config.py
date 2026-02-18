@@ -39,6 +39,13 @@ class Settings(BaseSettings):
         "https://cointelegraph.com/rss;"
         "https://www.theblock.co/rss.xml"
     )
+    openai_rss_feeds: str = Field(
+        default=(
+        "https://developers.openai.com/changelog/rss.xml;"
+        "https://openai.com/news/rss.xml"
+        ),
+        alias="OPENAI_RSS_FEEDS",
+    )
 
     solana_rpc_url: str = "https://api.mainnet-beta.solana.com"
     tron_api_url: str = "https://api.trongrid.io"
@@ -66,6 +73,9 @@ class Settings(BaseSettings):
 
     def rss_feed_list(self) -> List[str]:
         return [x.strip() for x in self.news_rss_feeds.split(";") if x.strip()]
+
+    def openai_rss_feed_list(self) -> List[str]:
+        return [x.strip() for x in self.openai_rss_feeds.split(";") if x.strip()]
 
     def admin_ids_list(self) -> List[int]:
         out: List[int] = []

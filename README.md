@@ -107,6 +107,7 @@ Data source/adapters:
 - `BINANCE_FUTURES_BASE_URL`
 - `COINGECKO_BASE_URL`
 - `NEWS_RSS_FEEDS`
+- `OPENAI_RSS_FEEDS` (optional, official OpenAI update/news feeds)
 - `CRYPTOPANIC_API_KEY` (optional)
 - `SOLANA_RPC_URL`
 - `TRON_API_URL`
@@ -141,7 +142,8 @@ Behavior/test mode:
 - Redis cache keys:
   - `price:<symbol>`
   - `ohlcv:<symbol>:<tf>:<limit>`
-  - `news:today`
+  - `news:crypto`
+  - `news:openai`
   - `funding:<symbol>`
 - Alert anti-spam:
   - one-shot status transition to `triggered`
@@ -166,6 +168,8 @@ Behavior/test mode:
 - `/scan <chain> <address>`
 - `/tradecheck` (interactive wizard)
 - `/news`
+- `/news cpi`
+- `/news openai`
 - `/cycle`
 - `/giveaway start <10m|1h|1d> prize "<text>"`
 - `/giveaway end`
@@ -205,6 +209,9 @@ Group behavior:
 
 4. Send `what are the latest news for today`
 - Expected: compact brief + headlines + links + vibe line
+
+4b. Send `cpi news` or `openai updates`
+- Expected: topic-filtered digest (macro/OpenAI) with source links; if no strict match, bot falls back to latest flow and says so
 
 5. Send `ping me when SOL hits 100`
 - Expected: alert created with ID and normalized condition

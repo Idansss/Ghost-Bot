@@ -147,14 +147,24 @@ def watchlist_template(payload: dict) -> str:
 
 
 def news_template(payload: dict) -> str:
-    lines = [payload["summary"], "Top headlines to track:", ""]
-    for idx, item in enumerate(payload["headlines"][:5], start=1):
+    lines = [payload["summary"], "", "Top headlines to track:"]
+    headlines = payload.get("headlines", [])[:5]
+    if not headlines:
+        lines.append("- No fresh items from configured feeds.")
+        lines.append("")
+        lines.append(payload["vibe"])
+        lines.append("Not financial advice.")
+        return "\n".join(lines)
+
+    for idx, item in enumerate(headlines, start=1):
         clean_url = _clean_url(item["url"])
-        lines.append(f"{idx}. {item['title']}")
-        lines.append(f"   Source: {item['source']}")
-        lines.append(f"   Link: {clean_url}")
+        lines.append("")
+        lines.append(f"{idx}) {item['title']}")
+        lines.append(f"Source: {item['source']}")
+        lines.append(f"Link: {clean_url}")
         lines.append("")
 
+    lines.append(f"Updated: {relative_updated(payload.get('updated_at')) or payload.get('updated_at', 'n/a')}")
     lines.append(payload["vibe"])
     lines.append("Not financial advice.")
     return "\n".join(lines)
@@ -257,6 +267,8 @@ def help_text() -> str:
         "- check this trade from yesterday: ETH entry 2100 stop 2165 targets 2043 2027 1991 timeframe 1h\n"
         "- is BIRB following BTC?\n"
         "- what are the latest news today\n"
+        "- cpi news\n"
+        "- openai updates\n"
         "Commands: /start /help /id /settings /watchlist [N] /alert add <symbol> <above|below|cross> <price> /alert list /alert delete <id> /scan <chain> <address> /tradecheck /news /cycle /giveaway start <10m|1h> prize \"...\" /giveaway end /giveaway reroll /giveaway status /join"
     )
 

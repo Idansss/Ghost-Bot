@@ -226,7 +226,15 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
 
     if intent == "news_digest":
         limit = max(3, min(_as_int(params.get("limit"), 6), 10))
-        payload = await hub.news_service.get_daily_brief(limit=limit)
+        topic = params.get("topic")
+        mode = str(params.get("mode") or "crypto").strip().lower() or "crypto"
+        if isinstance(topic, str) and topic.strip().lower() == "openai" and mode == "crypto":
+            mode = "openai"
+        payload = await hub.news_service.get_digest(
+            topic=topic if isinstance(topic, str) else None,
+            mode=mode,
+            limit=limit,
+        )
         await message.answer(news_template(payload))
         return True
 
@@ -518,7 +526,23 @@ async def watchlist_cmd(message: Message) -> None:
 @router.message(Command("news"))
 async def news_cmd(message: Message) -> None:
     hub = _require_hub()
-    payload = await hub.news_service.get_daily_brief(limit=5)
+    text = (message.text or "").strip()
+    topic = None
+    mode = "crypto"
+    if " " in text:
+        topic = text.split(" ", 1)[1].strip()
+    if topic:
+        lowered = topic.lower()
+        if re.search(r"\b(openai|chatgpt|gpt|codex)\b", lowered):
+            mode = "openai"
+            topic = "openai"
+        elif re.search(r"\b(cpi|inflation)\b", lowered):
+            mode = "macro"
+            topic = "cpi"
+        elif re.search(r"\b(fomc|fed|powell|macro|rates?)\b", lowered):
+            mode = "macro"
+            topic = "macro"
+    payload = await hub.news_service.get_digest(topic=topic, mode=mode, limit=6)
     await message.answer(news_template(payload))
 
 
@@ -1121,7 +1145,11 @@ async def route_text(message: Message) -> None:
             return
 
         if parsed.intent == Intent.NEWS:
-            payload = await hub.news_service.get_daily_brief(limit=5)
+            payload = await hub.news_service.get_digest(
+                topic=parsed.entities.get("topic"),
+                mode=parsed.entities.get("mode", "crypto"),
+                limit=int(parsed.entities.get("limit", 6)),
+            )
             await message.answer(news_template(payload))
             return
 

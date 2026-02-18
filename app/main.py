@@ -65,11 +65,17 @@ def build_hub(settings: Settings, bot: Bot, cache: RedisCache, http: ResilientHT
     )
     ohlcv_adapter = OHLCVAdapter(http=http, cache=cache, binance_base=settings.binance_base_url, coingecko_base=settings.coingecko_base_url)
     deriv_adapter = DerivativesAdapter(http=http, cache=cache, futures_base=settings.binance_futures_base_url)
-    news_adapter = NewsSourcesAdapter(http=http, cache=cache, rss_feeds=settings.rss_feed_list(), cryptopanic_key=settings.cryptopanic_api_key)
+    news_adapter = NewsSourcesAdapter(
+        http=http,
+        cache=cache,
+        rss_feeds=settings.rss_feed_list(),
+        cryptopanic_key=settings.cryptopanic_api_key,
+        openai_rss_feeds=settings.openai_rss_feed_list(),
+    )
     solana_adapter = SolanaAdapter(http=http, rpc_url=settings.solana_rpc_url)
     tron_adapter = TronAdapter(http=http, api_url=settings.tron_api_url, api_key=settings.trongrid_api_key)
 
-    news_service = NewsService(news_adapter)
+    news_service = NewsService(news_adapter, llm_client=llm_client)
     rsi_scanner_service = RSIScannerService(http=http, cache=cache, ohlcv_adapter=ohlcv_adapter, binance_base=settings.binance_base_url)
     discovery_service = DiscoveryService(
         http=http,

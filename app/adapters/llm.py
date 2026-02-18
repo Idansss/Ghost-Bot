@@ -39,6 +39,8 @@ Given the user's message, produce:
 
 Rules:
 - If user asks for crypto news ("latest crypto news", "news today", "what's happening"), set intent="news_digest" with params {"range":"today","limit":6}.
+- If user asks for CPI/FOMC/macro updates, set intent="news_digest" and include params {"topic":"cpi" or "macro","mode":"macro","limit":6}.
+- If user asks for OpenAI/ChatGPT/GPT/Codex updates, set intent="news_digest" and include params {"topic":"openai","mode":"openai","limit":6}.
 - If user says "watch btc" or "btc 4h", set intent="watch_asset" with {"symbol":"BTC","timeframe":"4h"} (default timeframe "1h" if missing).
 - If user says "<symbol> long/short", set intent="market_analysis" with {"symbol":"<symbol>","side":"long|short"} and optional timeframe.
 - If user says "alert me when X hits Y", set intent="alert_create" with {"symbol":"X","operator":">=" or "<=","price":Y}.
