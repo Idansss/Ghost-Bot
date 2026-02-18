@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     telegram_webhook_url: str = ""
     telegram_webhook_path: str = "/telegram/webhook"
     telegram_webhook_secret: str = ""
+    telegram_auto_set_webhook: bool = Field(default=True, alias="TELEGRAM_AUTO_SET_WEBHOOK")
+    serverless_mode: bool = Field(default=False, alias="SERVERLESS_MODE")
+    cron_secret: str = Field(default="", alias="CRON_SECRET")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL")
     openai_max_output_tokens: int = Field(default=350, alias="OPENAI_MAX_OUTPUT_TOKENS")

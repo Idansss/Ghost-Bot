@@ -41,6 +41,8 @@ This bot is analysis only. It does **not** place trades.
 - `app/db/models.py` - DB schema models
 - `app/db/migrations/versions/0001_initial.py` - initial Alembic migration
 - `app/workers/scheduler.py` - periodic alert monitor + news refresh
+- `api/index.py` - Vercel ASGI entrypoint
+- `vercel.json` - Vercel rewrites + cron schedule
 - `tests/` - parser + indicator + tradecheck tests
 
 ## Quick start (Docker Compose)
@@ -81,6 +83,33 @@ Webhook mode:
 - Optional: set `TELEGRAM_WEBHOOK_SECRET`
 - Ensure your reverse proxy routes `POST /telegram/webhook` to port `8000`
 
+## Deploy on Vercel
+
+1. Push this repo to GitHub and import it into Vercel.
+2. Set build/runtime to Python (Vercel auto-detects from `api/index.py`).
+3. Set required env vars in Vercel project:
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_USE_WEBHOOK=true`
+- `TELEGRAM_WEBHOOK_URL=https://<your-vercel-domain>`
+- `TELEGRAM_WEBHOOK_PATH=/telegram/webhook`
+- `SERVERLESS_MODE=true`
+- `TELEGRAM_AUTO_SET_WEBHOOK=true`
+- `DATABASE_URL` (use hosted Postgres, e.g. Neon/Supabase)
+- `REDIS_URL` (use hosted Redis, e.g. Upstash/Redis Cloud)
+- `CRON_SECRET` (used to secure `/tasks/*` cron endpoints)
+4. Run DB migrations against your hosted Postgres before first traffic:
+```bash
+alembic upgrade head
+```
+5. Deploy. Vercel cron (from `vercel.json`) triggers:
+- `/tasks/alerts/run` every minute
+- `/tasks/giveaways/run` every minute
+- `/tasks/news/warm` every 15 minutes
+
+Notes:
+- Docker Compose is for local/VPS only; Vercel needs external DB/Redis.
+- In `SERVERLESS_MODE`, polling and APScheduler are disabled automatically.
+
 ## Environment variables
 
 Required:
@@ -95,6 +124,9 @@ Primary runtime:
 - `TELEGRAM_WEBHOOK_URL`
 - `TELEGRAM_WEBHOOK_PATH`
 - `TELEGRAM_WEBHOOK_SECRET`
+- `TELEGRAM_AUTO_SET_WEBHOOK` (default `true`)
+- `SERVERLESS_MODE` (default `false`; set `true` on Vercel)
+- `CRON_SECRET` (optional but recommended for `/tasks/*`)
 - `OPENAI_API_KEY` (optional, enables freeform Q&A fallback)
 - `OPENAI_MODEL` (default `gpt-4.1-mini`)
 - `OPENAI_MAX_OUTPUT_TOKENS` (default `350`)

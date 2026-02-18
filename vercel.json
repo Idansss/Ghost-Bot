@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "50mb",
+        "runtime": "python3.11"
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "api/index.py"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/tasks/alerts/run",
+      "schedule": "*/1 * * * *"
+    },
+    {
+      "path": "/tasks/giveaways/run",
+      "schedule": "*/1 * * * *"
+    },
+    {
+      "path": "/tasks/news/warm",
+      "schedule": "*/15 * * * *"
+    }
+  ]
+}

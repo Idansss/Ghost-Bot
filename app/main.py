@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher
@@ -159,15 +160,20 @@ async def lifespan(app: FastAPI):
     init_handlers(hub)
     dp.include_router(router)
 
-    scheduler = WorkerScheduler(hub)
-    scheduler.start()
+    scheduler = None
+    if not settings.serverless_mode:
+        scheduler = WorkerScheduler(hub)
+        scheduler.start()
 
     polling_task = None
-    if settings.telegram_use_webhook:
+    if settings.serverless_mode and not settings.telegram_use_webhook:
+        logger.warning("serverless_mode_enabled_without_webhook", extra={"event": "serverless_warning"})
+
+    if settings.telegram_use_webhook and settings.telegram_auto_set_webhook:
         webhook_url = settings.telegram_webhook_url.rstrip("/") + settings.telegram_webhook_path
         await bot.set_webhook(webhook_url, secret_token=settings.telegram_webhook_secret or None)
         logger.info("webhook_configured", extra={"event": "webhook", "url": webhook_url})
-    else:
+    elif not settings.telegram_use_webhook and not settings.serverless_mode:
         polling_task = asyncio.create_task(dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types()))
 
     app.state.settings = settings
@@ -182,7 +188,8 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        scheduler.stop()
+        if scheduler:
+            scheduler.stop()
         if polling_task:
             polling_task.cancel()
             with contextlib.suppress(Exception):
@@ -195,6 +202,16 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="Ghost Alpha Bot", version="1.0.0", lifespan=lifespan)
+
+    def _cron_authorized(req: Request) -> bool:
+        if not settings.cron_secret:
+            return True
+        auth = req.headers.get("authorization", "")
+        if auth == f"Bearer {settings.cron_secret}":
+            return True
+        if req.headers.get("x-cron-secret", "") == settings.cron_secret:
+            return True
+        return False
 
     @app.get("/health")
     async def health() -> dict:
@@ -241,6 +258,36 @@ def create_app() -> FastAPI:
 
         await app.state.hub.analysis_service.price_adapter.set_mock_price(symbol, float(price))
         return {"ok": True, "symbol": symbol.upper(), "price": float(price)}
+
+    @app.api_route("/tasks/alerts/run", methods=["GET", "POST"])
+    async def task_alerts(req: Request) -> dict:
+        if not _cron_authorized(req):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        async def _notify(chat_id: int, text: str) -> None:
+            await app.state.bot.send_message(chat_id=chat_id, text=text)
+
+        count = await app.state.hub.alerts_service.process_alerts(_notify)
+        return {"ok": True, "processed": count, "task": "alerts", "ts": datetime.now(timezone.utc).isoformat()}
+
+    @app.api_route("/tasks/giveaways/run", methods=["GET", "POST"])
+    async def task_giveaways(req: Request) -> dict:
+        if not _cron_authorized(req):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        async def _notify(chat_id: int, text: str) -> None:
+            await app.state.bot.send_message(chat_id=chat_id, text=text)
+
+        count = await app.state.hub.giveaway_service.process_due_giveaways(_notify)
+        return {"ok": True, "processed": count, "task": "giveaways", "ts": datetime.now(timezone.utc).isoformat()}
+
+    @app.api_route("/tasks/news/warm", methods=["GET", "POST"])
+    async def task_news(req: Request) -> dict:
+        if not _cron_authorized(req):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+
+        await app.state.hub.news_service.get_daily_brief(limit=10)
+        return {"ok": True, "task": "news", "ts": datetime.now(timezone.utc).isoformat()}
 
     return app
 
