@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from logging.config import fileConfig
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from alembic import context
 from sqlalchemy import pool
@@ -11,7 +12,34 @@ from app.db.models import Base
 
 config = context.config
 settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+
+
+def _normalize_database_url(raw_url: str) -> str:
+    url = (raw_url or "").strip()
+    if url.startswith("postgres://"):
+        url = "postgresql+asyncpg://" + url[len("postgres://") :]
+    elif url.startswith("postgresql://"):
+        url = "postgresql+asyncpg://" + url[len("postgresql://") :]
+    return url
+
+
+def _normalize_asyncpg_query(url: str) -> str:
+    parsed = urlsplit(url)
+    pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    filtered: list[tuple[str, str]] = []
+    for key, value in pairs:
+        k = key.lower()
+        if k in {"sslmode", "channel_binding"}:
+            continue
+        filtered.append((key, value))
+    rebuilt = parsed._replace(query=urlencode(filtered))
+    return urlunsplit(rebuilt)
+
+
+normalized_url = _normalize_database_url(settings.database_url)
+if normalized_url.startswith("postgresql+asyncpg://"):
+    normalized_url = _normalize_asyncpg_query(normalized_url)
+config.set_main_option("sqlalchemy.url", normalized_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
