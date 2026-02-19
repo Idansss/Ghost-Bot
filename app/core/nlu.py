@@ -646,7 +646,12 @@ def parse_message(text: str) -> ParsedMessage:
             },
         )
 
-    if "rsi" in lower and re.search(r"\b(scan|top|overbought|oversold)\b", lower):
+    rsi_phrase = bool("rsi" in lower and re.search(r"\b(scan|top|overbought|oversold)\b", lower))
+    rsi_list_phrase = bool(
+        re.search(r"\b(overbought|oversold)\b", lower)
+        and re.search(r"\b(coin|coins|list|top|scan)\b", lower)
+    )
+    if rsi_phrase or rsi_list_phrase:
         tf_list, _, notes = parse_timeframes_request(stripped)
         timeframe = parse_timeframe(lower) or (tf_list[0] if tf_list else "1h")
         mode = "overbought" if "overbought" in lower else "oversold"

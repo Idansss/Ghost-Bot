@@ -18,6 +18,8 @@ from app.core.nlu import Intent, parse_message
         ("rsi top 10 1h oversold", Intent.RSI_SCAN, ["timeframe", "mode", "limit"]),
         ("top rsi 4h overbought", Intent.RSI_SCAN, ["timeframe", "mode"]),
         ("scan rsi sol 4h", Intent.RSI_SCAN, ["symbol", "timeframe"]),
+        ("overbought coins list 5", Intent.RSI_SCAN, ["mode", "limit"]),
+        ("oversold coins top 10", Intent.RSI_SCAN, ["mode", "limit"]),
         ("ping me when SOL hits 100", Intent.ALERT_CREATE, ["symbol", "target_price"]),
         ("set an alert btc 65000", Intent.ALERT_CREATE, ["symbol", "target_price"]),
         ("alert BTC above 70000", Intent.ALERT_CREATE, ["symbol", "target_price", "condition"]),
