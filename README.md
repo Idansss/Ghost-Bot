@@ -236,6 +236,19 @@ Behavior/test mode:
 - `/start`
 - `/help`
 - `/settings`
+- `/alpha <symbol> [tf] [ema=..] [rsi=..]`
+- `/watch <symbol> [tf]`
+- `/chart <symbol> [tf]`
+- `/heatmap <symbol>`
+- `/rsi <tf> <overbought|oversold> [topN] [len]`
+- `/ema <ema_len> <tf> [topN]`
+- `/news [crypto|openai|cpi|fomc] [limit]`
+- `/alert <symbol> <price> [above|below|cross]`
+- `/alerts`
+- `/alertdel <id>`
+- `/alertclear [symbol]`
+- `/findpair <price_or_query>`
+- `/setup <freeform setup text>`
 - `/watchlist [N]`
 - `/alert add <symbol> <above|below|cross> <price>`
 - `/alert list`
@@ -249,7 +262,8 @@ Behavior/test mode:
 - `/news cpi`
 - `/news openai`
 - `/cycle`
-- `/giveaway start <10m|1h|1d> prize "<text>"`
+- `/giveaway start <10m|1h|1d> <prize> [winners=N]`
+- `/giveaway join`
 - `/giveaway end`
 - `/giveaway reroll`
 - `/giveaway status`
@@ -287,6 +301,19 @@ Advanced analysis syntax is supported:
 - `rsi top 10 1h oversold` / `top rsi 4h overbought`
 - `find pair xion` / `find $PHB`
 - `coin around 0.155`
+
+Slash equivalents (optional for power users):
+
+- `/alpha SOL 4h ema=20,50,200 rsi=14`
+- `/chart BTC 1h`
+- `/rsi 1h oversold 10 14`
+- `/ema 200 4h 10`
+- `/alert SOL 100`
+- `/alerts`
+- `/alertdel 12`
+- `/alertclear SOL`
+- `/findpair 0.155`
+- `/setup long BTC entry 66300 sl 64990 tp 69200 72000 amount 100 leverage 10`
 
 Group behavior:
 

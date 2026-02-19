@@ -278,7 +278,11 @@ def help_text() -> str:
         "- cpi news\n"
         "- openai updates\n"
         "- source? / which exchange?\n"
-        "Commands: /start /help /id /settings /watchlist [N] /alert add <symbol> <above|below|cross> <price> /alert list /alert delete <id> /scan <chain> <address> /tradecheck /news /cycle /giveaway start <10m|1h> prize \"...\" /giveaway end /giveaway reroll /giveaway status /join"
+        "Commands: /start /help /id /settings /alpha <symbol> [tf] [ema=..] [rsi=..] /watch <symbol> [tf] "
+        "/chart <symbol> [tf] /heatmap <symbol> /rsi <tf> <overbought|oversold> [topN] [len] /ema <ema_len> <tf> [topN] "
+        "/news [crypto|openai|cpi|fomc] [limit] /alert <symbol> <price> [above|below|cross] /alerts /alertdel <id> "
+        "/alertclear [symbol] /findpair <price_or_query> /setup <freeform setup text> "
+        "/scan <chain> <address> /tradecheck /cycle /giveaway start <10m|1h> <prize> [winners=N] /giveaway join /giveaway end /giveaway reroll /giveaway status /join"
     )
 
 

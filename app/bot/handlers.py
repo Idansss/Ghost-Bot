@@ -518,6 +518,36 @@ async def _llm_route_message(user_text: str) -> dict | None:
     return payload
 
 
+async def _dispatch_command_text(message: Message, synthetic_text: str) -> bool:
+    hub = _require_hub()
+    chat_id = message.chat.id
+    settings = await hub.user_service.get_settings(chat_id)
+    parsed = parse_message(synthetic_text)
+
+    if parsed.requires_followup:
+        if parsed.intent == Intent.ANALYSIS and not parsed.entities.get("symbol"):
+            kb = simple_followup(
+                [
+                    ("BTC", "quick:analysis:BTC"),
+                    ("ETH", "quick:analysis:ETH"),
+                    ("SOL", "quick:analysis:SOL"),
+                ]
+            )
+            await message.answer(parsed.followup_question or "Need one detail.", reply_markup=kb)
+            return True
+        await message.answer(parsed.followup_question or unknown_prompt(), reply_markup=smart_action_menu())
+        return True
+
+    if await _handle_parsed_intent(message, parsed, settings):
+        return True
+
+    llm_reply = await _llm_fallback_reply(synthetic_text, settings, chat_id=chat_id)
+    if llm_reply:
+        await message.answer(llm_reply)
+        return True
+    return False
+
+
 async def _handle_routed_intent(message: Message, settings: dict, route: dict) -> bool:
     hub = _require_hub()
     intent = str(route.get("intent", "")).strip().lower()
@@ -1429,6 +1459,83 @@ async def settings_cmd(message: Message) -> None:
     await message.answer(settings_text(settings), reply_markup=settings_menu(settings))
 
 
+@router.message(Command("alpha"))
+async def alpha_cmd(message: Message) -> None:
+    raw = (message.text or "").strip()
+    args = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
+    text = args.strip()
+    if not text:
+        await message.answer("Usage: /alpha <symbol> [tf] [ema=..] [rsi=..]")
+        return
+    tokens = text.split()
+    if len(tokens) == 1:
+        text = f"watch {tokens[0]}"
+    await _dispatch_command_text(message, text)
+
+
+@router.message(Command("watch"))
+async def watch_cmd(message: Message) -> None:
+    raw = (message.text or "").strip()
+    args = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
+    text = args.strip()
+    if not text:
+        await message.answer("Usage: /watch <symbol> [tf]")
+        return
+    await _dispatch_command_text(message, f"watch {text}")
+
+
+@router.message(Command("chart"))
+async def chart_cmd(message: Message) -> None:
+    raw = (message.text or "").strip()
+    args = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
+    text = args.strip()
+    if not text:
+        await message.answer("Usage: /chart <symbol> [tf]")
+        return
+    await _dispatch_command_text(message, f"chart {text}")
+
+
+@router.message(Command("heatmap"))
+async def heatmap_cmd(message: Message) -> None:
+    raw = (message.text or "").strip()
+    args = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
+    text = args.strip()
+    if not text:
+        await message.answer("Usage: /heatmap <symbol>")
+        return
+    await _dispatch_command_text(message, f"heatmap {text}")
+
+
+@router.message(Command("rsi"))
+async def rsi_cmd(message: Message) -> None:
+    raw = (message.text or "").strip()
+    parts = raw.split()
+    if len(parts) < 3:
+        await message.answer("Usage: /rsi <tf> <overbought|oversold> [topN] [len]")
+        return
+    timeframe = parts[1].lower()
+    mode = parts[2].lower()
+    if mode not in {"overbought", "oversold"}:
+        await message.answer("Mode must be `overbought` or `oversold`.")
+        return
+    top_n = max(1, min(_as_int(parts[3], 10), 20)) if len(parts) >= 4 else 10
+    rsi_len = max(2, min(_as_int(parts[4], 14), 50)) if len(parts) >= 5 else 14
+    await _dispatch_command_text(message, f"rsi top {top_n} {timeframe} {mode} rsi{rsi_len}")
+
+
+@router.message(Command("ema"))
+async def ema_cmd(message: Message) -> None:
+    raw = (message.text or "").strip()
+    parts = raw.split()
+    if len(parts) < 3:
+        await message.answer("Usage: /ema <ema_len> <tf> [topN]")
+        return
+    ema_len = max(2, min(_as_int(parts[1], 200), 500))
+    timeframe = parts[2].lower()
+    top_n = max(1, min(_as_int(parts[3], 10), 20)) if len(parts) >= 4 else 10
+    await _dispatch_command_text(message, f"ema {ema_len} {timeframe} top {top_n}")
+
+
 @router.message(Command("watchlist"))
 async def watchlist_cmd(message: Message) -> None:
     hub = _require_hub()
@@ -1452,12 +1559,23 @@ async def watchlist_cmd(message: Message) -> None:
 async def news_cmd(message: Message) -> None:
     hub = _require_hub()
     text = (message.text or "").strip()
-    topic = None
+    topic: str | None = None
     mode = "crypto"
-    if " " in text:
-        topic = text.split(" ", 1)[1].strip()
+    limit = 6
+    parts = text.split()
+    if len(parts) > 1:
+        raw_topic = parts[1].strip()
+        if raw_topic.isdigit():
+            limit = max(3, min(int(raw_topic), 10))
+        else:
+            topic = raw_topic
+    if len(parts) > 2 and parts[2].isdigit():
+        limit = max(3, min(int(parts[2]), 10))
+
     if topic:
-        lowered = topic.lower()
+        lowered = topic.lower().strip()
+        if lowered in {"crypto", "openai", "cpi", "fomc"}:
+            topic = lowered
         if re.search(r"\b(openai|chatgpt|gpt|codex)\b", lowered):
             mode = "openai"
             topic = "openai"
@@ -1467,7 +1585,7 @@ async def news_cmd(message: Message) -> None:
         elif re.search(r"\b(fomc|fed|powell|macro|rates?)\b", lowered):
             mode = "macro"
             topic = "macro"
-    payload = await hub.news_service.get_digest(topic=topic, mode=mode, limit=6)
+    payload = await hub.news_service.get_digest(topic=topic, mode=mode, limit=limit)
     heads = payload.get("headlines") if isinstance(payload, dict) else None
     head = heads[0] if isinstance(heads, list) and heads else {}
     await _remember_source_context(
@@ -1573,15 +1691,113 @@ async def alert_cmd(message: Message) -> None:
         )
         return
 
-    await message.answer(
-        "Use /alert add <symbol> <above|below|cross> <price> | /alert list | /alert delete <id> | /alert clear | /alert pause | /alert resume"
+    simple_match = re.search(
+        r"^/alert\s+([A-Za-z0-9$]{2,20})\s+([0-9]+(?:\.[0-9]+)?)(?:\s+(above|below|cross))?\s*$",
+        text,
+        re.IGNORECASE,
     )
+    if simple_match:
+        symbol = simple_match.group(1).upper().lstrip("$")
+        price = float(simple_match.group(2))
+        condition = (simple_match.group(3) or "cross").lower()
+        alert = await hub.alerts_service.create_alert(message.chat.id, symbol, condition, price, source="command")
+        await _remember_source_context(
+            message.chat.id,
+            exchange=alert.source_exchange,
+            market_kind=alert.market_kind,
+            instrument_id=alert.instrument_id,
+            symbol=symbol,
+            context="alert",
+        )
+        await message.answer(
+            f"Alert created: #{alert.id}\nCondition: {symbol} {condition} {price}\n"
+            "I will trigger once on crossing and avoid spam."
+        )
+        return
+
+    await message.answer(
+        "Use /alert <symbol> <price> [above|below|cross] | /alerts | /alertdel <id> | /alertclear [symbol] | "
+        "/alert add <symbol> <above|below|cross> <price> | /alert list"
+    )
+
+
+@router.message(Command("alerts"))
+async def alerts_cmd(message: Message) -> None:
+    hub = _require_hub()
+    alerts = await hub.alerts_service.list_alerts(message.chat.id)
+    if not alerts:
+        await message.answer("No active alerts.")
+        return
+    rows = [
+        (f"#{a.id} {a.symbol} {a.condition} {a.target_price} [{a.status}]").strip()
+        for a in alerts
+    ]
+    first = alerts[0]
+    await _remember_source_context(
+        message.chat.id,
+        exchange=first.source_exchange,
+        market_kind=first.market_kind,
+        instrument_id=first.instrument_id,
+        symbol=first.symbol,
+        context="alerts list",
+    )
+    await message.answer("Active alerts:\n" + "\n".join(rows))
+
+
+@router.message(Command("alertdel"))
+async def alertdel_cmd(message: Message) -> None:
+    hub = _require_hub()
+    text = (message.text or "").strip()
+    m = re.search(r"^/alertdel\s+(\d+)\s*$", text, re.IGNORECASE)
+    if not m:
+        await message.answer("Usage: /alertdel <id>")
+        return
+    ok = await hub.alerts_service.delete_alert(message.chat.id, int(m.group(1)))
+    await message.answer("Deleted." if ok else "Alert not found.")
+
+
+@router.message(Command("alertclear"))
+async def alertclear_cmd(message: Message) -> None:
+    hub = _require_hub()
+    text = (message.text or "").strip()
+    m = re.search(r"^/alertclear\s+([A-Za-z0-9$]{2,20})\s*$", text, re.IGNORECASE)
+    if m:
+        symbol = m.group(1).upper().lstrip("$")
+        count = await hub.alerts_service.delete_alerts_by_symbol(message.chat.id, symbol)
+        await message.answer(f"Cleared {count} alerts for {symbol}.")
+        return
+    count = await hub.alerts_service.clear_user_alerts(message.chat.id)
+    await message.answer(f"Cleared {count} alerts.")
 
 
 @router.message(Command("tradecheck"))
 async def tradecheck_cmd(message: Message) -> None:
     await _wizard_set(message.chat.id, {"step": "symbol", "data": {}})
     await message.answer("Tradecheck wizard: send symbol (e.g., ETH).")
+
+
+@router.message(Command("findpair"))
+async def findpair_cmd(message: Message) -> None:
+    raw = (message.text or "").strip()
+    args = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
+    query = args.strip()
+    if not query:
+        await message.answer("Usage: /findpair <price_or_query>")
+        return
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", query):
+        await _dispatch_command_text(message, f"coin around {query}")
+        return
+    await _dispatch_command_text(message, f"find pair {query}")
+
+
+@router.message(Command("setup"))
+async def setup_cmd(message: Message) -> None:
+    raw = (message.text or "").strip()
+    args = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
+    if not args.strip():
+        await message.answer("Usage: /setup <freeform setup text>")
+        return
+    await _dispatch_command_text(message, args.strip())
 
 
 @router.message(Command("join"))
@@ -1611,6 +1827,15 @@ async def giveaway_cmd(message: Message) -> None:
         await message.answer(giveaway_status_template(payload))
         return
 
+    if re.search(r"^/giveaway\s+join\b", text, flags=re.IGNORECASE):
+        try:
+            payload = await hub.giveaway_service.join_active(message.chat.id, message.from_user.id)
+        except Exception as exc:  # noqa: BLE001
+            await message.answer(str(exc))
+            return
+        await message.answer(f"Joined giveaway #{payload['giveaway_id']}. Participants: {payload['participants']}")
+        return
+
     if re.search(r"^/giveaway\s+end\b", text, flags=re.IGNORECASE):
         try:
             payload = await hub.giveaway_service.end_giveaway(message.chat.id, message.from_user.id)
@@ -1637,15 +1862,19 @@ async def giveaway_cmd(message: Message) -> None:
         )
         return
 
-    start_match = re.search(r"^/giveaway\s+start\s+(\S+)(?:\s+prize\s+(.+))?$", text, flags=re.IGNORECASE)
+    start_match = re.search(r"^/giveaway\s+start\s+(\S+)(?:\s+(.+))?$", text, flags=re.IGNORECASE)
     if start_match:
         duration_raw = start_match.group(1)
         duration_seconds = _parse_duration_to_seconds(duration_raw)
         if duration_seconds is None:
             await message.answer("Invalid duration. Example: /giveaway start 10m prize \"50 USDT\"")
             return
-        prize_raw = (start_match.group(2) or "Prize").strip()
-        prize = prize_raw.strip("'\"")
+        tail = (start_match.group(2) or "").strip()
+        winners_match = re.search(r"\bwinners?\s*=?\s*(\d+)\b", tail, flags=re.IGNORECASE)
+        winners_requested = int(winners_match.group(1)) if winners_match else 1
+        tail = re.sub(r"\bwinners?\s*=?\s*\d+\b", "", tail, flags=re.IGNORECASE).strip()
+        tail = re.sub(r"^\s*prize\s+", "", tail, flags=re.IGNORECASE).strip()
+        prize = (tail or "Prize").strip("'\"")
         try:
             payload = await hub.giveaway_service.start_giveaway(
                 group_chat_id=message.chat.id,
@@ -1656,13 +1885,18 @@ async def giveaway_cmd(message: Message) -> None:
         except Exception as exc:  # noqa: BLE001
             await message.answer(str(exc))
             return
+        note = ""
+        if winners_requested > 1:
+            note = "\nNote: multi-winner draw will run as sequential rerolls after the first winner."
         await message.answer(
             f"Giveaway #{payload['id']} started.\nPrize: {payload['prize']}\n"
-            f"Ends at: {payload['end_time']}\nUsers enter with /join"
+            f"Ends at: {payload['end_time']}\nUsers enter with /join or /giveaway join{note}"
         )
         return
 
-    await message.answer("Usage: /giveaway start 10m prize \"50 USDT\" | /giveaway end | /giveaway reroll | /giveaway status")
+    await message.answer(
+        "Usage: /giveaway start <duration> <prize> [winners=N] | /giveaway join | /giveaway end | /giveaway reroll | /giveaway status"
+    )
 
 
 @router.callback_query(F.data.startswith("settings:"))
