@@ -60,3 +60,29 @@ def simple_followup(options: list[tuple[str, str]]) -> InlineKeyboardMarkup:
         kb.button(text=text, callback_data=value)
     kb.adjust(len(options))
     return kb.as_markup()
+
+
+def smart_action_menu(symbol: str | None = None) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if symbol:
+        sym = symbol.upper()
+        kb.button(text=f"{sym} Analyze 1h", callback_data=f"quick:analysis_tf:{sym}:1h")
+        kb.button(text=f"{sym} Analyze 4h", callback_data=f"quick:analysis_tf:{sym}:4h")
+        kb.button(text=f"{sym} Chart 1h", callback_data=f"quick:chart:{sym}:1h")
+        kb.button(text=f"{sym} Heatmap", callback_data=f"quick:heatmap:{sym}")
+        kb.button(text=f"{sym} Set Alert", callback_data=f"set_alert:{sym}")
+        kb.button(text="Top Overbought 1h", callback_data="quick:rsi:overbought:1h:5")
+        kb.button(text="Top Oversold 1h", callback_data="quick:rsi:oversold:1h:5")
+        kb.button(text=f"{sym} News", callback_data=f"catalysts:{sym}")
+        kb.adjust(2, 2, 2, 2)
+        return kb.as_markup()
+
+    kb.button(text="BTC Analyze 1h", callback_data="quick:analysis_tf:BTC:1h")
+    kb.button(text="ETH Analyze 1h", callback_data="quick:analysis_tf:ETH:1h")
+    kb.button(text="SOL Analyze 1h", callback_data="quick:analysis_tf:SOL:1h")
+    kb.button(text="Top Overbought 1h", callback_data="quick:rsi:overbought:1h:5")
+    kb.button(text="Top Oversold 1h", callback_data="quick:rsi:oversold:1h:5")
+    kb.button(text="Crypto News", callback_data="quick:news:crypto")
+    kb.button(text="OpenAI Updates", callback_data="quick:news:openai")
+    kb.adjust(2, 2, 1, 2)
+    return kb.as_markup()

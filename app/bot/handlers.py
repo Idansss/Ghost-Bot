@@ -11,7 +11,7 @@ from aiogram.enums import ChatAction
 from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from app.bot.keyboards import analysis_actions, settings_menu, simple_followup, wallet_actions
+from app.bot.keyboards import analysis_actions, settings_menu, simple_followup, smart_action_menu, wallet_actions
 from app.bot.templates import (
     asset_unsupported_template,
     correlation_template,
@@ -62,6 +62,25 @@ SOURCE_QUERY_STOPWORDS = {
     "of",
     "result",
     "last",
+}
+ACTION_SYMBOL_STOPWORDS = {
+    "how",
+    "are",
+    "you",
+    "doing",
+    "coin",
+    "coins",
+    "overbought",
+    "oversold",
+    "list",
+    "top",
+    "news",
+    "alert",
+    "scan",
+    "chart",
+    "heatmap",
+    "short",
+    "long",
 }
 
 
@@ -144,6 +163,15 @@ def _extract_source_symbol_hint(text: str) -> str | None:
 
 def _is_source_query(text: str) -> bool:
     return bool(SOURCE_QUERY_RE.search(text or ""))
+
+
+def _extract_action_symbol_hint(text: str) -> str | None:
+    for token in re.findall(r"\b[A-Za-z]{2,12}\b", text):
+        low = token.lower()
+        if low in ACTION_SYMBOL_STOPWORDS:
+            continue
+        return token.upper().lstrip("$")
+    return None
 
 
 async def _remember_source_context(
@@ -1905,6 +1933,126 @@ async def quick_analysis_callback(callback: CallbackQuery) -> None:
     await _run_with_typing_lock(callback.bot, chat_id, _run)
 
 
+@router.callback_query(F.data.startswith("quick:analysis_tf:"))
+async def quick_analysis_tf_callback(callback: CallbackQuery) -> None:
+    if not await _acquire_callback_once(callback):
+        with suppress(Exception):
+            await callback.answer()
+        return
+
+    chat_id = callback.message.chat.id
+
+    async def _run() -> None:
+        hub = _require_hub()
+        _, _, symbol, timeframe = (callback.data or "").split(":", 3)
+        settings = await hub.user_service.get_settings(chat_id)
+        payload = await hub.analysis_service.analyze(
+            symbol.upper(),
+            timeframe=timeframe,
+            timeframes=[timeframe],
+            ema_periods=_parse_int_list(settings.get("preferred_ema_periods", [20, 50, 200]), [20, 50, 200]),
+            rsi_periods=_parse_int_list(settings.get("preferred_rsi_periods", [14]), [14]),
+            include_derivatives=False,
+            include_news=False,
+        )
+        await hub.cache.set_json(f"last_analysis:{chat_id}:{symbol.upper()}", payload, ttl=1800)
+        await callback.message.answer(trade_plan_template(payload, settings), reply_markup=analysis_actions(symbol.upper()))
+        await callback.answer()
+
+    await _run_with_typing_lock(callback.bot, chat_id, _run)
+
+
+@router.callback_query(F.data.startswith("quick:chart:"))
+async def quick_chart_callback(callback: CallbackQuery) -> None:
+    if not await _acquire_callback_once(callback):
+        with suppress(Exception):
+            await callback.answer()
+        return
+
+    chat_id = callback.message.chat.id
+
+    async def _run() -> None:
+        hub = _require_hub()
+        _, _, symbol, timeframe = (callback.data or "").split(":", 3)
+        img, _ = await hub.chart_service.render_chart(symbol=symbol.upper(), timeframe=timeframe)
+        await callback.message.answer_photo(
+            BufferedInputFile(img, filename=f"{symbol.upper()}-{timeframe}.png"),
+            caption=f"{symbol.upper()} {timeframe} chart.",
+        )
+        await callback.answer()
+
+    await _run_with_typing_lock(callback.bot, chat_id, _run)
+
+
+@router.callback_query(F.data.startswith("quick:heatmap:"))
+async def quick_heatmap_callback(callback: CallbackQuery) -> None:
+    if not await _acquire_callback_once(callback):
+        with suppress(Exception):
+            await callback.answer()
+        return
+
+    chat_id = callback.message.chat.id
+
+    async def _run() -> None:
+        hub = _require_hub()
+        _, _, symbol = (callback.data or "").split(":", 2)
+        img, _ = await hub.heatmap_service.render(symbol=symbol.upper())
+        await callback.message.answer_photo(
+            BufferedInputFile(img, filename=f"{symbol.upper()}-heatmap.png"),
+            caption=f"{symbol.upper()} order-book heatmap.",
+        )
+        await callback.answer()
+
+    await _run_with_typing_lock(callback.bot, chat_id, _run)
+
+
+@router.callback_query(F.data.startswith("quick:rsi:"))
+async def quick_rsi_callback(callback: CallbackQuery) -> None:
+    if not await _acquire_callback_once(callback):
+        with suppress(Exception):
+            await callback.answer()
+        return
+
+    chat_id = callback.message.chat.id
+
+    async def _run() -> None:
+        hub = _require_hub()
+        _, _, mode, timeframe, limit_raw = (callback.data or "").split(":", 4)
+        limit = max(1, min(_as_int(limit_raw, 5), 20))
+        payload = await hub.rsi_scanner_service.scan(
+            timeframe=timeframe,
+            mode="overbought" if mode == "overbought" else "oversold",
+            limit=limit,
+            rsi_length=14,
+            symbol=None,
+        )
+        await callback.message.answer(rsi_scan_template(payload))
+        await callback.answer()
+
+    await _run_with_typing_lock(callback.bot, chat_id, _run)
+
+
+@router.callback_query(F.data.startswith("quick:news:"))
+async def quick_news_callback(callback: CallbackQuery) -> None:
+    if not await _acquire_callback_once(callback):
+        with suppress(Exception):
+            await callback.answer()
+        return
+
+    chat_id = callback.message.chat.id
+
+    async def _run() -> None:
+        hub = _require_hub()
+        _, _, mode = (callback.data or "").split(":", 2)
+        mode_norm = "openai" if mode == "openai" else "crypto"
+        topic = "openai" if mode_norm == "openai" else "crypto"
+        payload = await hub.news_service.get_digest(topic=topic, mode=mode_norm, limit=6)
+        await callback.message.answer(news_template(payload))
+        await callback.answer()
+
+    await _run_with_typing_lock(callback.bot, chat_id, _run)
+
+
 @router.message(F.text)
 async def route_text(message: Message) -> None:
     hub = _require_hub()
@@ -2091,7 +2239,13 @@ async def route_text(message: Message) -> None:
                     if llm_reply:
                         await message.answer(llm_reply)
                         return
-                    await message.answer(unknown_prompt())
+                    symbol_hint = _extract_action_symbol_hint(text)
+                    prompt = (
+                        f"I can route this faster. Pick one for {symbol_hint}:"
+                        if symbol_hint
+                        else unknown_prompt()
+                    )
+                    await message.answer(prompt, reply_markup=smart_action_menu(symbol_hint))
                     return
                 if parsed.intent == Intent.ANALYSIS and not parsed.entities.get("symbol"):
                     kb = simple_followup(
@@ -2110,7 +2264,11 @@ async def route_text(message: Message) -> None:
                 if await _handle_parsed_intent(message, parsed, settings):
                     return
                 llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
-                await message.answer(llm_reply or parsed.followup_question or unknown_prompt())
+                if llm_reply:
+                    await message.answer(llm_reply)
+                    return
+                symbol_hint = _extract_action_symbol_hint(text)
+                await message.answer(parsed.followup_question or unknown_prompt(), reply_markup=smart_action_menu(symbol_hint))
                 return
             except Exception as exc:  # noqa: BLE001
                 await message.answer(
