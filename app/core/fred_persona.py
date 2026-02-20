@@ -8,11 +8,7 @@ class FredPersona:
     def __init__(self):
         self.claude_key = os.getenv("ANTHROPIC_API_KEY")
         self.grok_key = os.getenv("XAI_API_KEY")
-
-        if not self.claude_key:
-            raise ValueError("ANTHROPIC_API_KEY not found in .env")
-        if not self.grok_key:
-            raise ValueError("XAI_API_KEY not found in .env")
+        self.enabled = bool(self.claude_key or self.grok_key)
 
     SYSTEM_PROMPT = """You are Fred — the legendary purple dragon from Traders Academy Discord, now reborn as Ghost Alpha.
 You are savage, sarcastic, meme-literate, brutally honest and call everyone "fren".
@@ -49,48 +45,54 @@ TRADE PLAN format (only for actual ticker analysis with data):
   stay sharp, fren"""
 
     async def format_as_fred(self, raw_data: Dict[str, Any]) -> str:
+        if not self.enabled:
+            raise RuntimeError("Fred persona disabled: no ANTHROPIC_API_KEY or XAI_API_KEY configured")
+
         user_message = f"""Convert this raw analysis into PERFECT Fred style. Be savage and funny.
 
 Raw data:
 {json.dumps(raw_data, indent=2)}"""
 
         # 1. Try Claude first (best personality)
-        try:
-            response = await acompletion(
-                model="anthropic/claude-3-5-sonnet-20241022",
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=0.85,
-                max_tokens=850,
-                api_key=self.claude_key,
-                timeout=20,
-            )
-            return response.choices[0].message.content.strip()
+        if self.claude_key:
+            try:
+                response = await acompletion(
+                    model="anthropic/claude-3-5-sonnet-20241022",
+                    messages=[
+                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message}
+                    ],
+                    temperature=0.85,
+                    max_tokens=850,
+                    api_key=self.claude_key,
+                    timeout=20,
+                )
+                return response.choices[0].message.content.strip()
 
-        except Exception as e:
-            print(f"Claude failed ({e}), falling back to Grok...")
+            except Exception as e:
+                print(f"Claude failed ({e}), falling back to Grok...")
 
         # 2. Fallback to Grok
-        try:
-            response = await acompletion(
-                model="xai/grok-3-fast-beta",
-                messages=[
-                    {"role": "system", "content": self.SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=0.9,
-                max_tokens=800,
-                api_key=self.grok_key,
-                base_url="https://api.x.ai/v1",
-                timeout=20,
-            )
-            return response.choices[0].message.content.strip()
+        if self.grok_key:
+            try:
+                response = await acompletion(
+                    model="xai/grok-3-fast-beta",
+                    messages=[
+                        {"role": "system", "content": self.SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message}
+                    ],
+                    temperature=0.9,
+                    max_tokens=800,
+                    api_key=self.grok_key,
+                    base_url="https://api.x.ai/v1",
+                    timeout=20,
+                )
+                return response.choices[0].message.content.strip()
 
-        except Exception as e:
-            print(f"Both LLMs failed: {e}")
-            return "Plan generated.\n\nfren the dragon is taking a quick nap. send the ticker again in 10 seconds.\nstay sharp."
+            except Exception as e:
+                print(f"Both LLMs failed: {e}")
+
+        return "Plan generated.\n\nfren the dragon is taking a quick nap. send the ticker again in 10 seconds.\nstay sharp."
 
 
 # Singleton

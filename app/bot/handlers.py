@@ -131,7 +131,11 @@ def _chat_lock(chat_id: int) -> asyncio.Lock:
 async def _acquire_message_once(message: Message, ttl: int = 60 * 60 * 6) -> bool:
     hub = _require_hub()
     key = f"seen:message:{message.chat.id}:{message.message_id}"
-    return await hub.cache.set_if_absent(key, ttl=ttl)
+    try:
+        return await hub.cache.set_if_absent(key, ttl=ttl)
+    except Exception:  # noqa: BLE001
+        logger.exception("dedupe_cache_error", extra={"event": "dedupe_cache_error", "chat_id": message.chat.id})
+        return True
 
 
 async def _acquire_callback_once(callback: CallbackQuery, ttl: int = 60 * 30) -> bool:
@@ -558,12 +562,16 @@ async def _is_group_admin(message: Message) -> bool:
 
 async def _check_req_limit(chat_id: int) -> bool:
     hub = _require_hub()
-    result = await hub.rate_limiter.check(
-        key=f"rl:req:{chat_id}:{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}",
-        limit=_settings.request_rate_limit_per_minute,
-        window_seconds=60,
-    )
-    return result.allowed
+    try:
+        result = await hub.rate_limiter.check(
+            key=f"rl:req:{chat_id}:{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}",
+            limit=_settings.request_rate_limit_per_minute,
+            window_seconds=60,
+        )
+        return result.allowed
+    except Exception:  # noqa: BLE001
+        logger.exception("rate_limit_check_error", extra={"event": "rate_limit_check_error", "chat_id": chat_id})
+        return True
 
 
 async def _llm_fallback_reply(user_text: str, settings: dict | None = None, chat_id: int | None = None) -> str | None:
@@ -3327,6 +3335,13 @@ async def route_text(message: Message) -> None:
                     "Try again with a bit more detail."
                 )
                 return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "route_text_unhandled_error",
+            extra={"event": "route_text_unhandled_error", "chat_id": chat_id},
+        )
+        with suppress(Exception):
+            await message.answer(f"I hit an internal error while routing that message: {exc}")
     finally:
         stop.set()
         typing_task.cancel()

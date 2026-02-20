@@ -890,10 +890,18 @@ def parse_message(text: str) -> ParsedMessage:
     if _looks_like_smalltalk(lower):
         return ParsedMessage(Intent.SMALLTALK)
 
+    has_structured_tool_phrase = bool(
+        re.search(
+            r"\b(news|headline|update|overbought|oversold|rsi|ema|chart|heatmap|orderbook|depth|"
+            r"alert|watchlist|scan|wallet|cycle|correlation|tradecheck|pair|price guess)\b",
+            lower,
+        )
+    )
     if (
         is_likely_english_phrase(stripped)
         and not lower.startswith("/")
         and not ENGLISH_PHRASE_EXCLUDE_RE.search(lower)
+        and not has_structured_tool_phrase
     ):
         return ParsedMessage(
             Intent.UNKNOWN,
