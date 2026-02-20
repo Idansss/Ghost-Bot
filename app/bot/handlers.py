@@ -124,6 +124,16 @@ FOLLOWUP_VALUE_RE = re.compile(r"\b[0-9]+(?:\.[0-9]+)?\b")
 _CHAT_LOCKS_MAX = 2000
 
 
+def _safe_exc(exc: Exception) -> str:
+    """Return exception message safe for Telegram HTML parse_mode (no raw < > & chars)."""
+    return (
+        str(exc)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 def _chat_lock(chat_id: int) -> asyncio.Lock:
     lock = _CHAT_LOCKS.get(chat_id)
     if lock is None:
@@ -837,10 +847,40 @@ async def _llm_route_message(user_text: str) -> dict | None:
     return payload
 
 
+_ALERT_SHORTCUT_RE = re.compile(
+    r"^alert\s+([A-Za-z0-9]{2,20})\s+([\d.,]+[kKmM]?)\s*(above|below|cross|crosses|over|under)?\s*$",
+    re.IGNORECASE,
+)
+
+
 async def _dispatch_command_text(message: Message, synthetic_text: str) -> bool:
     hub = _require_hub()
     chat_id = message.chat.id
     settings = await hub.user_service.get_settings(chat_id)
+
+    # Fast-path: "alert {symbol} {price} [condition]" — bypass NLU to avoid LLM confusion
+    _am = _ALERT_SHORTCUT_RE.match(synthetic_text.strip())
+    if _am:
+        from app.core.nlu import _extract_prices  # already imported elsewhere but safe to reimport
+        sym = _am.group(1).upper()
+        raw_price_str = _am.group(2)
+        raw_cond = (_am.group(3) or "cross").lower()
+        prices = _extract_prices(raw_price_str)
+        px = prices[0] if prices else None
+        if sym and px is not None:
+            cond = "above" if raw_cond in ("above", "over") else ("below" if raw_cond in ("below", "under") else "cross")
+            try:
+                alert = await hub.alerts_service.create_alert(chat_id, sym, cond, float(px))
+                await message.answer(
+                    f"alert set for <b>{alert.symbol}</b> at <b>${float(px):,.2f}</b>. "
+                    "i'll ping you when we hit it. don't get liquidated"
+                )
+            except RuntimeError as exc:
+                await message.answer(f"couldn't set that alert — {_safe_exc(exc)}")
+            except Exception:  # noqa: BLE001
+                await message.answer("alert creation failed. try again.")
+            return True
+
     parsed = parse_message(synthetic_text)
 
     if parsed.requires_followup:
@@ -1100,13 +1140,21 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
             await message.answer("Need symbol and price — e.g. <code>alert BTC 66k</code> or <code>set alert for SOL 200</code>.")
             return True
         op = str(params.get("operator") or params.get("condition") or "cross").strip().lower()
-        if op in {">", ">=", "above", "gt", "gte"}:
+        if op in {">", ">=", "above", "gt", "gte", "crosses above", "cross above"}:
             condition = "above"
-        elif op in {"<", "<=", "below", "lt", "lte"}:
+        elif op in {"<", "<=", "below", "lt", "lte", "crosses below", "cross below"}:
             condition = "below"
         else:
             condition = "cross"
-        alert = await hub.alerts_service.create_alert(chat_id, symbol, condition, float(price))
+        try:
+            alert = await hub.alerts_service.create_alert(chat_id, symbol, condition, float(price))
+        except RuntimeError as exc:
+            await message.answer(f"couldn't set that alert — {_safe_exc(exc)}")
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("alert_create_failed", extra={"chat_id": chat_id, "symbol": symbol, "price": price})
+            await message.answer(f"alert creation failed. try again in a sec.")
+            return True
         await _remember_source_context(
             chat_id,
             exchange=alert.source_exchange,
@@ -1116,7 +1164,7 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
             context="alert",
         )
         await message.answer(
-            f"alert set for <b>{alert.symbol}</b> at <b>{alert.target_price}</b>. "
+            f"alert set for <b>{alert.symbol}</b> at <b>${float(price):,.2f}</b>. "
             "i'll ping you when we hit it. don't get liquidated"
         )
         return True
@@ -1576,12 +1624,18 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         return True
 
     if parsed.intent == Intent.ALERT_CREATE:
-        alert = await hub.alerts_service.create_alert(
-            chat_id,
-            parsed.entities["symbol"],
-            parsed.entities.get("condition", "cross"),
-            float(parsed.entities["target_price"]),
-        )
+        sym = parsed.entities["symbol"]
+        price_val = float(parsed.entities["target_price"])
+        cond = parsed.entities.get("condition", "cross")
+        try:
+            alert = await hub.alerts_service.create_alert(chat_id, sym, cond, price_val)
+        except RuntimeError as exc:
+            await message.answer(f"couldn't set that alert — {_safe_exc(exc)}")
+            return True
+        except Exception:  # noqa: BLE001
+            logger.exception("alert_create_nlu_failed", extra={"chat_id": chat_id, "symbol": sym})
+            await message.answer("alert creation failed. try again in a sec.")
+            return True
         await _remember_source_context(
             chat_id,
             exchange=alert.source_exchange,
@@ -1591,7 +1645,7 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
             context="alert",
         )
         await message.answer(
-            f"alert set for <b>{alert.symbol}</b> at <b>{alert.target_price}</b>. "
+            f"alert set for <b>{alert.symbol}</b> at <b>${price_val:,.2f}</b>. "
             "i'll ping you when we hit it. don't get liquidated"
         )
         return True
@@ -2250,9 +2304,9 @@ async def join_cmd(message: Message) -> None:
     try:
         payload = await hub.giveaway_service.join_active(message.chat.id, message.from_user.id)
     except Exception as exc:  # noqa: BLE001
-        await message.answer(str(exc))
+        await message.answer(f"couldn't join: {_safe_exc(exc)}")
         return
-    await message.answer(f"Joined giveaway #{payload['giveaway_id']}. Participants: {payload['participants']}")
+    await message.answer(f"you're in 🎉 giveaway <b>#{payload['giveaway_id']}</b> — participants: <b>{payload['participants']}</b>")
 
 
 @router.message(Command("giveaway"))
@@ -2272,34 +2326,37 @@ async def giveaway_cmd(message: Message) -> None:
         try:
             payload = await hub.giveaway_service.join_active(message.chat.id, message.from_user.id)
         except Exception as exc:  # noqa: BLE001
-            await message.answer(str(exc))
+            await message.answer(f"couldn't join: {_safe_exc(exc)}")
             return
-        await message.answer(f"Joined giveaway #{payload['giveaway_id']}. Participants: {payload['participants']}")
+        await message.answer(f"you're in 🎉 giveaway <b>#{payload['giveaway_id']}</b> — participants: <b>{payload['participants']}</b>")
         return
 
     if re.search(r"^/giveaway\s+end\b", text, flags=re.IGNORECASE):
         try:
             payload = await hub.giveaway_service.end_giveaway(message.chat.id, message.from_user.id)
         except Exception as exc:  # noqa: BLE001
-            await message.answer(str(exc))
+            await message.answer(f"couldn't end giveaway: {_safe_exc(exc)}")
             return
         if payload.get("winner_user_id"):
             await message.answer(
-                f"Giveaway #{payload['giveaway_id']} ended.\nWinner: {payload['winner_user_id']}\nPrize: {payload['prize']}"
+                f"🏆 giveaway <b>#{payload.get('giveaway_id')}</b> closed.\n"
+                f"winner: <code>{payload.get('winner_user_id')}</code>\n"
+                f"prize: <b>{payload.get('prize', '—')}</b>"
             )
         else:
-            await message.answer(f"Giveaway ended with no winner. {payload.get('note')}")
+            await message.answer(f"giveaway ended with no winner. {payload.get('note')}")
         return
 
     if re.search(r"^/giveaway\s+reroll\b", text, flags=re.IGNORECASE):
         try:
             payload = await hub.giveaway_service.reroll(message.chat.id, message.from_user.id)
         except Exception as exc:  # noqa: BLE001
-            await message.answer(str(exc))
+            await message.answer(f"reroll failed: {_safe_exc(exc)}")
             return
         await message.answer(
-            f"Reroll complete for giveaway #{payload['giveaway_id']}.\n"
-            f"New winner: {payload['winner_user_id']} (prev: {payload.get('previous_winner_user_id')})"
+            f"🔄 reroll done for giveaway <b>#{payload.get('giveaway_id')}</b>\n"
+            f"new winner: <code>{payload.get('winner_user_id')}</code>\n"
+            f"prev: <code>{payload.get('previous_winner_user_id', '—')}</code>"
         )
         return
 
@@ -2324,7 +2381,7 @@ async def giveaway_cmd(message: Message) -> None:
                 prize=prize,
             )
         except Exception as exc:  # noqa: BLE001
-            await message.answer(str(exc))
+            await message.answer(f"couldn't start giveaway: {_safe_exc(exc)}")
             return
         note = ""
         if winners_requested > 1:
@@ -3529,18 +3586,19 @@ async def route_text(message: Message) -> None:
                     await message.answer(parsed.followup_question or unknown_prompt(), reply_markup=smart_action_menu(symbol_hint))
                 return
             except Exception as exc:  # noqa: BLE001
+                logger.exception("handle_parsed_intent_error", extra={"event": "handle_parsed_intent_error", "chat_id": chat_id})
                 await message.answer(
-                    f"Could not complete that request cleanly: {exc}\n"
-                    "Try again with a bit more detail."
+                    f"couldn't complete that — <i>{_safe_exc(exc)}</i>\n"
+                    "try again with a bit more detail."
                 )
                 return
-    except Exception as exc:  # noqa: BLE001
-        logger.exception(
-            "route_text_unhandled_error",
-            extra={"event": "route_text_unhandled_error", "chat_id": chat_id},
-        )
-        with suppress(Exception):
-            await message.answer(f"I hit an internal error while routing that message: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "route_text_unhandled_error",
+                extra={"event": "route_text_unhandled_error", "chat_id": chat_id},
+            )
+            with suppress(Exception):
+                await message.answer(f"something broke on my end. try again in a sec. (<i>{_safe_exc(exc)}</i>)")
     finally:
         stop.set()
         typing_task.cancel()
