@@ -162,5 +162,5 @@ class SetupReviewService:
             },
             "position": position,
             "size_note": size_note,
-            "risk_line": "Not financial advice. Treat this as risk planning, not execution advice.",
+            "risk_line": "Use this as a risk-planning map, then execute only if structure still holds.",
         }

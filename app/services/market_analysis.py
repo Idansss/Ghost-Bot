@@ -9,6 +9,7 @@ from app.adapters.derivatives import DerivativesAdapter
 from app.adapters.ohlcv import BINANCE_SUPPORTED_INTERVALS, OHLCVAdapter
 from app.adapters.prices import PriceAdapter
 from app.core.ta import atr, bollinger_mid, consolidation_zone, ema, macd, pivot_levels, rsi
+from app.services.market_context import MarketContextService, format_market_context
 from app.services.news import NewsService
 
 DEFAULT_TIMEFRAME_PACK = ["15m", "1h", "4h", "1d"]
@@ -43,6 +44,7 @@ class MarketAnalysisService:
         self.include_derivatives_default = include_derivatives_default
         self.include_news_default = include_news_default
         self.request_timeout_sec = max(2.0, float(request_timeout_sec))
+        self.market_context_service = MarketContextService(price_adapter, ohlcv_adapter)
         self._narrative_map = {
             "PHB": "AI/privacy infrastructure narrative on BNB-linked flow; usually momentum-driven around AI headlines.",
             "FET": "AI-agent narrative token; often beta to broader AI sector and BTC risk sentiment.",
@@ -50,6 +52,9 @@ class MarketAnalysisService:
             "RNDR": "AI + compute narrative; tends to track high-beta growth sentiment.",
             "ARB": "L2 beta play; liquidity and incentive headlines can move it quickly.",
         }
+
+    async def get_market_context(self) -> dict:
+        return await self.market_context_service.get_market_context()
 
     def _tf_rank(self, tf: str) -> int:
         if tf.endswith("m"):
@@ -323,9 +328,18 @@ class MarketAnalysisService:
         if include_news_flag and headlines:
             bullets.append(f"Catalyst: {headlines[0]['title']}")
 
+        market_context = await self._with_timeout(self.get_market_context(), min(8.0, self.request_timeout_sec + 2.0))
+        if isinstance(market_context, Exception):
+            market_context = {}
+            notes.append("Market context was partially unavailable.")
+        market_context_text = format_market_context(market_context if isinstance(market_context, dict) else {})
+        btc_ctx = market_context.get("btc", {}) if isinstance(market_context, dict) else {}
+        btc_1h = str(btc_ctx.get("trend_1h") or "unknown")
+        btc_4h = str(btc_ctx.get("trend_4h") or "unknown")
+
         summary = (
             f"{symbol} is showing {'relative strength' if trend_score >= 0 else 'selling pressure'} across "
-            f"{', '.join(sorted_tfs)}. {condition}."
+            f"{', '.join(sorted_tfs)}. {condition}. BTC backdrop is {btc_1h} on 1h and {btc_4h} on 4h."
         )
 
         return {
@@ -342,7 +356,9 @@ class MarketAnalysisService:
             "price_source": price["source"],
             "data_source_line": data_source_line,
             "updated_at": price["ts"],
-            "risk": "Not financial advice. Use sizing and stop discipline.",
+            "risk": "Do not over-size this one. If it loses structure, cut it fast.",
+            "market_context": market_context,
+            "market_context_text": market_context_text,
             "mtf_snapshot": mtf_snapshot,
             "input_notes": notes,
             "details": {
@@ -358,6 +374,7 @@ class MarketAnalysisService:
                 "headlines": headlines[:3],
                 "include_derivatives": include_derivatives_flag,
                 "include_news": include_news_flag,
+                "market_context": market_context,
             },
         }
 

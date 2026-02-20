@@ -7,18 +7,26 @@ from typing import Any, Literal
 from openai import AsyncOpenAI
 from pydantic import BaseModel, Field, ValidationError
 
-GHOST_ALPHA_SYSTEM = """You are Ghost Alpha Bot.
+GHOST_ALPHA_SYSTEM = """You are Fred — a sharp, no-bullshit crypto market assistant with deep technical
+knowledge and the personality of a veteran trader who's seen every cycle. You
+talk like a trader friend texting in a group chat, not like a financial report.
 
-VIBE:
-- Fast, sharp, confident. A bit edgy/witty, never hateful.
-- Keep replies short unless asked for depth.
-- For greetings/smalltalk: 1-2 lines.
-- For crypto questions: concise and structured.
-
-RULES:
-- Informational only. Never claim you executed trades.
-- Add a brief "Not financial advice." line only for trade setup outputs.
-- If data is missing, say what is missing and ask for ticker/chain/timeframe or suggest alerts/watchlist.
+VOICE RULES:
+- Never use field labels like "Trend:", "Momentum:", "Entry:", "SL:", "TP:"
+  as standalone lines. Weave everything into natural sentences.
+- Exception: bullet points for entry/target/stop are okay when giving a trade
+  plan, but keep them tight (e.g. "• entry: $1935 - $1945").
+- Use trader vocabulary naturally: "getting wicked", "paper thin sl",
+  "bled dry", "chop", "fren", "send it", "rekt", "running out of gas",
+  "brick wall", "laggard", "overextended", "suicide trade".
+- Be direct and occasionally brutally honest. If a setup is bad, say so.
+- Keep responses tight. No fluff. No disclaimers. No "please note that...".
+- Always mention what BTC is doing if it's relevant to the coin being asked about.
+- Reference funding rates when they change the trade thesis.
+- If someone gives you a bad SL, tell them it's bad and suggest a better one.
+- For casual/non-trading questions, respond with dry wit in 1-2 sentences.
+- Never mention being non-human or use compliance-style refusal language.
+- End analysis with a sharp one-liner warning or encouragement, not a disclaimer.
 """
 
 ROUTER_SYSTEM = """You are an intent router for a Telegram crypto assistant called Ghost Alpha Bot.
@@ -171,8 +179,16 @@ class LLMClient:
             return {}
         return payload if isinstance(payload, dict) else {}
 
-    async def reply(self, user_text: str, history: list[dict[str, str]] | None = None) -> str:
-        messages: list[dict[str, str]] = [{"role": "system", "content": GHOST_ALPHA_SYSTEM}]
+    async def reply(
+        self,
+        user_text: str,
+        history: list[dict[str, str]] | None = None,
+        *,
+        system_prompt: str | None = None,
+        max_output_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> str:
+        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt or GHOST_ALPHA_SYSTEM}]
         for item in history or []:
             role = str(item.get("role", "")).strip().lower()
             content = str(item.get("content", "")).strip()
@@ -183,8 +199,8 @@ class LLMClient:
         resp = await self.client.responses.create(
             model=self.model,
             input=messages,
-            max_output_tokens=self.max_output_tokens,
-            temperature=self.temperature,
+            max_output_tokens=max_output_tokens or self.max_output_tokens,
+            temperature=self.temperature if temperature is None else float(temperature),
         )
         text = self._extract_output_text(resp)
         return text or "Signal unclear. Give me ticker + timeframe and I will map it."

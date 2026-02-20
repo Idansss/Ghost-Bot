@@ -21,7 +21,7 @@ def test_trade_plan_template_hides_source_lines() -> None:
         "why": ["Trend up", "Momentum recovering"],
         "data_source_line": "Data source: Bybit Spot (SOLUSDT) | Updated: 30s ago",
         "updated_at": "2026-02-19T00:00:00+00:00",
-        "risk": "Not financial advice.",
+        "risk": "Cut it fast if invalidated.",
     }
     text = trade_plan_template(payload, {"formal_mode": False, "tone_mode": "standard", "anon_mode": False})
     assert "Data source:" not in text

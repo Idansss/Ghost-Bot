@@ -38,12 +38,29 @@ class WorkerScheduler:
         payload = await self.hub.rsi_scanner_service.refresh_indicators(force=False)
         logger.info("scan_indicators_refreshed", extra={"event": "scan_indicators_refreshed", **payload})
 
+    async def _process_market_broadcasts(self) -> None:
+        channel_ids = self.settings.broadcast_channel_ids_list()
+        if not self.settings.broadcast_enabled or not channel_ids or not self.hub.broadcast_service:
+            return
+        sent = await self.hub.broadcast_service.check_and_broadcast(self.hub.bot, channel_ids)
+        logger.info(
+            "market_broadcast_checked",
+            extra={"event": "market_broadcast_checked", "sent": int(sent), "channels": len(channel_ids)},
+        )
+
     def start(self) -> None:
         self.scheduler.add_job(self._process_alerts, "interval", seconds=self.settings.alert_check_interval_sec, max_instances=1)
         self.scheduler.add_job(self._refresh_news_cache, "interval", minutes=15, max_instances=1)
         self.scheduler.add_job(self._process_giveaways, "interval", seconds=20, max_instances=1)
         self.scheduler.add_job(self._refresh_scan_universe, "interval", minutes=30, max_instances=1)
         self.scheduler.add_job(self._refresh_scan_indicators, "interval", minutes=5, max_instances=1)
+        if self.settings.broadcast_enabled and self.settings.broadcast_channel_ids_list():
+            self.scheduler.add_job(
+                self._process_market_broadcasts,
+                "interval",
+                minutes=max(5, int(self.settings.broadcast_interval_minutes)),
+                max_instances=1,
+            )
         self.scheduler.start()
 
     def stop(self) -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.nlu import Intent, parse_message
+from app.core.nlu import Intent, is_likely_english_phrase, parse_message
 
 
 @pytest.mark.parametrize(
@@ -124,7 +124,13 @@ def test_unknown_fallback_prompt_is_actionable() -> None:
     parsed = parse_message("explain your modules")
     assert parsed.intent == Intent.UNKNOWN
     assert parsed.requires_followup
-    assert "SOL long" in (parsed.followup_question or "")
+    assert "ticker" in (parsed.followup_question or "").lower()
+
+
+def test_common_english_phrase_is_not_ticker_intent() -> None:
+    assert is_likely_english_phrase("define trading")
+    parsed = parse_message("define trading")
+    assert parsed.intent == Intent.UNKNOWN
 
 
 def test_analysis_caps_timeframes_and_periods() -> None:

@@ -29,6 +29,7 @@ from app.core.rate_limit import RateLimiter
 from app.db.session import AsyncSessionLocal
 from app.services.alerts import AlertsService
 from app.services.audit import AuditService
+from app.services.broadcast_service import BroadcastService
 from app.services.correlation import CorrelationService
 from app.services.cycles import CyclesService
 from app.services.discovery import DiscoveryService
@@ -232,6 +233,23 @@ def build_hub(settings: Settings, bot: Bot, cache: RedisCache, http: ResilientHT
     )
     chart_service = ChartService(ohlcv_adapter=ohlcv_adapter)
     orderbook_heatmap_service = OrderbookHeatmapService(market_router=market_router)
+    analysis_service = MarketAnalysisService(
+        price_adapter,
+        ohlcv_adapter,
+        deriv_adapter,
+        news_service,
+        fast_mode=settings.analysis_fast_mode,
+        default_timeframes=settings.analysis_default_timeframes_list(),
+        include_derivatives_default=settings.analysis_include_derivatives_default,
+        include_news_default=settings.analysis_include_news_default,
+        request_timeout_sec=settings.analysis_request_timeout_sec,
+    )
+    broadcast_service = BroadcastService(
+        analysis_service=analysis_service,
+        llm_client=llm_client,
+        cache=cache,
+        rate_limit_minutes=settings.broadcast_rate_limit_minutes,
+    )
 
     return ServiceHub(
         bot=bot,
@@ -243,17 +261,7 @@ def build_hub(settings: Settings, bot: Bot, cache: RedisCache, http: ResilientHT
         user_service=UserService(AsyncSessionLocal),
         audit_service=AuditService(AsyncSessionLocal),
         # analysis service defaults tuned for low latency; deep data can still be requested on demand
-        analysis_service=MarketAnalysisService(
-            price_adapter,
-            ohlcv_adapter,
-            deriv_adapter,
-            news_service,
-            fast_mode=settings.analysis_fast_mode,
-            default_timeframes=settings.analysis_default_timeframes_list(),
-            include_derivatives_default=settings.analysis_include_derivatives_default,
-            include_news_default=settings.analysis_include_news_default,
-            request_timeout_sec=settings.analysis_request_timeout_sec,
-        ),
+        analysis_service=analysis_service,
         alerts_service=AlertsService(
             db_factory=AsyncSessionLocal,
             cache=cache,
@@ -282,6 +290,7 @@ def build_hub(settings: Settings, bot: Bot, cache: RedisCache, http: ResilientHT
         orderbook_heatmap_service=orderbook_heatmap_service,
         discovery_service=discovery_service,
         giveaway_service=giveaway_service,
+        broadcast_service=broadcast_service,
     )
 
 

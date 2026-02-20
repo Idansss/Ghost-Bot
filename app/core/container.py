@@ -10,6 +10,7 @@ from app.core.cache import RedisCache
 from app.core.rate_limit import RateLimiter
 from app.services.alerts import AlertsService
 from app.services.audit import AuditService
+from app.services.broadcast_service import BroadcastService
 from app.services.correlation import CorrelationService
 from app.services.cycles import CyclesService
 from app.services.discovery import DiscoveryService
@@ -52,3 +53,4 @@ class ServiceHub:
     orderbook_heatmap_service: OrderbookHeatmapService
     discovery_service: DiscoveryService
     giveaway_service: GiveawayService
+    broadcast_service: BroadcastService | None = None

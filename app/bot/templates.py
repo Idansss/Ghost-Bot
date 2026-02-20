@@ -43,11 +43,11 @@ STANDARD_ACKS = [
 ]
 
 STANDARD_WARNINGS = [
-    "Keep risk controlled and respect your stop.",
+    "Keep it sized so a bad wick does not wreck the day.",
 ]
 
 STANDARD_CLOSERS = [
-    "Send another ticker if you want a follow-up.",
+    "Send the next chart if you want a second read.",
 ]
 
 UNKNOWN_FOLLOWUPS = [
@@ -58,10 +58,6 @@ UNKNOWN_FOLLOWUPS = [
 
 
 def _style_prefix(settings: dict) -> str:
-    if settings.get("formal_mode"):
-        return ""
-    if settings.get("anon_mode", True):
-        return "anon: "
     return ""
 
 
@@ -87,56 +83,61 @@ def _render_summary(summary: str, settings: dict) -> str:
 
 
 def trade_plan_template(plan: dict, settings: dict, detailed: bool = False) -> str:
-    tone = _tone_mode(settings)
-    if tone == "wild":
-        ack = _pick(WILD_ACKS)
-        warning = _pick(WILD_WARNINGS)
-        closer = _pick(WILD_CLOSERS)
-    elif tone == "standard":
-        ack = _pick(STANDARD_ACKS)
-        warning = _pick(STANDARD_WARNINGS)
-        closer = _pick(STANDARD_CLOSERS)
-    else:
-        ack = ""
-        warning = "Manage risk and respect invalidation."
-        closer = ""
+    symbol = str(plan.get("symbol") or "asset").lower()
+    side = str(plan.get("side") or "").strip().lower()
+    price = plan.get("price")
+    summary = _render_summary(plan.get("summary", "").strip(), settings)
+    context = str(plan.get("market_context_text") or "").strip()
 
-    lines = [*( [ack] if ack else [] ), _render_summary(plan["summary"], settings), ""]
+    if isinstance(price, (int, float)):
+        lead = f"{symbol} is around ${float(price):,.4f}. {summary}"
+    else:
+        lead = summary or f"{symbol} setup mapped."
+
+    side_hint = ""
+    if side in {"long", "short"}:
+        side_hint = f"{side} lean right now."
+
+    lines = [lead]
+    if side_hint:
+        lines.append(side_hint)
+    if context:
+        lines.append(f"market backdrop: {context}")
+
     lines.extend(
         [
-            "Entry: " + plan["entry"],
-            "TP1: " + plan["tp1"],
-            "TP2: " + plan["tp2"],
-            "SL: " + plan["sl"],
             "",
+            f"• entry: {plan['entry']}",
+            f"• target: {plan['tp1']} then {plan['tp2']}",
+            f"• stop: {plan['sl']}",
         ]
     )
 
     why_items = plan.get("why", [])
-    for bullet in (why_items if detailed else why_items[:2]):
-        lines.append(f"- {bullet}")
+    if why_items:
+        lines.append("")
+        for bullet in (why_items if detailed else why_items[:2]):
+            lines.append(f"- {bullet}")
 
     if detailed and plan.get("mtf_snapshot"):
         lines.append("")
-        lines.append("MTF snapshot:")
+        lines.append("mtf:")
         for row in plan["mtf_snapshot"][:4]:
             lines.append(f"- {row}")
 
     if detailed and plan.get("input_notes"):
         lines.append("")
         for note in plan["input_notes"][:3]:
-            lines.append(f"Note: {note}")
+            lines.append(f"note: {note}")
 
     if detailed:
         updated = plan.get("updated_at")
         if updated:
             lines.append("")
-            lines.append(f"Updated: {relative_updated(updated) or updated}")
+            lines.append(f"updated: {relative_updated(updated) or updated}")
 
-    lines.append(warning)
-    if closer:
-        lines.append(closer)
-    lines.append(plan.get("risk", "Not financial advice."))
+    lines.append("")
+    lines.append(plan.get("risk", "Stay nimble and cut it if structure breaks."))
     return "\n".join(lines)
 
 
@@ -148,9 +149,6 @@ def watchlist_template(payload: dict) -> str:
     ]
     for idx, item in enumerate(payload["items"], start=1):
         lines.append(f"{idx}. {item}")
-
-    lines.append("")
-    lines.append("Not financial advice. Use risk controls.")
     return "\n".join(lines)
 
 
@@ -161,7 +159,6 @@ def news_template(payload: dict) -> str:
         lines.append("- No fresh items from configured feeds.")
         lines.append("")
         lines.append(payload["vibe"])
-        lines.append("Not financial advice.")
         return "\n".join(lines)
 
     for idx, item in enumerate(headlines, start=1):
@@ -173,7 +170,6 @@ def news_template(payload: dict) -> str:
 
     lines.append(f"Updated: {relative_updated(payload.get('updated_at')) or payload.get('updated_at', 'n/a')}")
     lines.append(payload["vibe"])
-    lines.append("Not financial advice.")
     return "\n".join(lines)
 
 
@@ -206,8 +202,6 @@ def wallet_scan_template(payload: dict) -> str:
     lines.append("Warnings:")
     for warn in payload.get("warnings", [])[:4]:
         lines.append(f"- {warn}")
-
-    lines.append("Not financial advice.")
     return "\n".join(lines)
 
 
@@ -215,7 +209,6 @@ def cycle_template(payload: dict) -> str:
     lines = [payload["summary"], "", f"Confidence: {payload['confidence']:.0%}"]
     for b in payload["bullets"]:
         lines.append(f"- {b}")
-    lines.append("Not financial advice.")
     return "\n".join(lines)
 
 
@@ -224,8 +217,7 @@ def trade_verification_template(payload: dict) -> str:
         text = (
             f"Trade check for {payload['symbol']}\n"
             f"Result: not filled\n"
-            f"{payload['note']}\n"
-            "Not financial advice."
+            f"{payload['note']}"
         )
         return text
 
@@ -238,8 +230,6 @@ def trade_verification_template(payload: dict) -> str:
         f"MFE: {payload.get('mfe')}",
         f"MAE: {payload.get('mae')}",
         f"R multiple: {payload.get('r_multiple')}",
-        "",
-        "Not financial advice.",
     ]
     return "\n".join(lines)
 
@@ -248,7 +238,6 @@ def correlation_template(payload: dict) -> str:
     lines = [payload["summary"], ""]
     for b in payload["bullets"]:
         lines.append(f"- {b}")
-    lines.append("Not financial advice.")
     return "\n".join(lines)
 
 
@@ -407,7 +396,7 @@ def trade_math_template(payload: dict, settings: dict) -> str:
         )
         for row in position.get("tp_pnls", [])[:4]:
             lines.append(f"- TP {row['tp']}: ${row['pnl_usd']}")
-    lines.extend(["", "Not financial advice."])
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -440,7 +429,6 @@ def asset_unsupported_template(payload: dict, settings: dict) -> str:
         lines.append("")
         lines.append("Alternatives I can map now: " + ", ".join(payload["alternatives"]))
     lines.append(closer)
-    lines.append("Not financial advice.")
     return "\n".join(lines)
 
 
@@ -475,8 +463,6 @@ def rsi_scan_template(payload: dict) -> str:
         return "\n".join(lines)
     for idx, row in enumerate(payload["items"], start=1):
         lines.append(f"{idx}. {row['symbol']} RSI({payload['rsi_length']}) {payload['timeframe']} = {row['rsi']} ({row['note']})")
-    lines.append("")
-    lines.append("Not financial advice.")
     return "\n".join(lines)
 
 
@@ -507,8 +493,6 @@ def price_guess_template(payload: dict) -> str:
     for idx, row in enumerate(matches[:10], start=1):
         tradable = "YES" if row.get("tradable_binance") else "NO"
         lines.append(f"{idx}. {row['symbol']} ({row.get('name')}) - ${row['price']} | Tradable: {tradable}")
-    lines.append("")
-    lines.append("Not financial advice.")
     return "\n".join(lines)
 
 

@@ -191,6 +191,68 @@ COMMON_STOPWORDS = {
     "join",
 }
 
+COMMON_WORDS_NOT_TICKERS = {
+    "define",
+    "what",
+    "explain",
+    "show",
+    "list",
+    "help",
+    "trading",
+    "trade",
+    "market",
+    "crypto",
+    "price",
+    "coin",
+    "token",
+    "when",
+    "how",
+    "why",
+    "who",
+    "where",
+    "tell",
+    "give",
+    "find",
+    "get",
+    "set",
+    "make",
+    "do",
+    "is",
+    "are",
+    "was",
+    "will",
+    "can",
+    "should",
+    "would",
+    "could",
+    "good",
+    "bad",
+    "best",
+    "worst",
+    "top",
+    "bottom",
+    "high",
+    "low",
+    "buy",
+    "sell",
+    "long",
+    "short",
+    "hold",
+    "about",
+    "the",
+    "a",
+    "an",
+}
+
+ENGLISH_PHRASE_EXCLUDE_RE = re.compile(
+    r"\b("
+    r"alert|scan|chart|heatmap|orderbook|depth|rsi|ema|watchlist|watch|pair|tradecheck|setup|"
+    r"entry|stop|sl|tp\d*|target|long|short|giveaway|news|cycle|correlation|following|wallet|"
+    r"candles?|plot|price|funding|open interest|oi"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class ParsedMessage:
@@ -352,6 +414,15 @@ def _looks_like_smalltalk(lower: str) -> bool:
     return False
 
 
+def is_likely_english_phrase(text: str) -> bool:
+    words = [w.strip(".,!?;:()[]{}\"'").lower() for w in text.split() if w.strip()]
+    if len(words) >= 2:
+        common_count = sum(1 for w in words if w in COMMON_WORDS_NOT_TICKERS)
+        if common_count / len(words) > 0.5:
+            return True
+    return False
+
+
 def parse_ema_request(text: str) -> tuple[list[int] | None, bool, list[str]]:
     return _parse_periods(text, "ema", MAX_EMA_PERIODS, max_value=500)
 
@@ -420,7 +491,7 @@ def _extract_symbols(text: str) -> list[str]:
     symbols: list[str] = []
     for token in SYMBOL_RE.findall(text):
         lower = token.lower()
-        if lower in COMMON_STOPWORDS:
+        if lower in COMMON_STOPWORDS or lower in COMMON_WORDS_NOT_TICKERS:
             continue
         if len(token) < 2:
             continue
@@ -591,6 +662,18 @@ def parse_message(text: str) -> ParsedMessage:
 
     if _looks_like_smalltalk(lower):
         return ParsedMessage(Intent.SMALLTALK)
+
+    if (
+        is_likely_english_phrase(stripped)
+        and not lower.startswith("/")
+        and not ENGLISH_PHRASE_EXCLUDE_RE.search(lower)
+    ):
+        return ParsedMessage(
+            Intent.UNKNOWN,
+            {},
+            True,
+            "Give me a ticker + direction (`SOL long`) if you want a setup, or keep chatting.",
+        )
 
     if lower.startswith("/alert list") or "list alerts" in lower:
         return ParsedMessage(Intent.ALERT_LIST)

@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     alert_check_interval_sec: int = 30
     alert_cooldown_min: int = 30
     admin_chat_ids: str = ""
+    broadcast_enabled: bool = Field(default=False, alias="BROADCAST_ENABLED")
+    broadcast_channel_ids: str = Field(default="", alias="BROADCAST_CHANNEL_IDS")
+    broadcast_interval_minutes: int = Field(default=15, alias="BROADCAST_INTERVAL_MINUTES")
+    broadcast_rate_limit_minutes: int = Field(default=60, alias="BROADCAST_RATE_LIMIT_MINUTES")
     giveaway_min_participants: int = 2
     analysis_fast_mode: bool = Field(default=True, alias="ANALYSIS_FAST_MODE")
     analysis_default_timeframes: str = Field(default="1h", alias="ANALYSIS_DEFAULT_TIMEFRAMES")
@@ -121,6 +125,18 @@ class Settings(BaseSettings):
             if tf:
                 out.append(tf)
         return out or ["1h"]
+
+    def broadcast_channel_ids_list(self) -> List[int]:
+        out: List[int] = []
+        for item in self.broadcast_channel_ids.split(","):
+            raw = item.strip()
+            if not raw:
+                continue
+            try:
+                out.append(int(raw))
+            except ValueError:
+                continue
+        return out
 
     def rsi_scan_timeframes_list(self) -> List[str]:
         out: List[str] = []

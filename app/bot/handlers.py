@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -55,7 +56,8 @@ from app.bot.templates import (
 )
 from app.core.config import get_settings
 from app.core.container import ServiceHub
-from app.core.nlu import Intent, parse_message, parse_timestamp
+from app.core.fred_persona import fred
+from app.core.nlu import COMMON_WORDS_NOT_TICKERS, Intent, is_likely_english_phrase, parse_message, parse_timestamp
 from app.db.models import TradeCheck
 from app.db.session import AsyncSessionLocal
 
@@ -106,6 +108,16 @@ ACTION_SYMBOL_STOPWORDS = {
     "short",
     "long",
 }
+ACTION_SYMBOL_STOPWORDS.update(COMMON_WORDS_NOT_TICKERS)
+FOLLOWUP_RE = re.compile(
+    r"\b("
+    r"how about|what if|too risky|risky|is\s+[0-9.]+\s+(a\s+)?good\s+entry|good entry|"
+    r"sl|stop(?:\s+loss)?|entry|target|tp\d*|take profit|"
+    r"leverage|[0-9]+x|risk|rr|send it|thoughts?|better|worse"
+    r")\b",
+    re.IGNORECASE,
+)
+FOLLOWUP_VALUE_RE = re.compile(r"\b[0-9]+(?:\.[0-9]+)?\b")
 
 
 def _chat_lock(chat_id: int) -> asyncio.Lock:
@@ -190,6 +202,8 @@ def _is_source_query(text: str) -> bool:
 
 
 def _extract_action_symbol_hint(text: str) -> str | None:
+    if is_likely_english_phrase(text):
+        return None
     for token in re.findall(r"\b[A-Za-z]{2,12}\b", text):
         low = token.lower()
         if low in ACTION_SYMBOL_STOPWORDS:
@@ -323,6 +337,154 @@ async def _append_chat_history(chat_id: int, role: str, content: str) -> None:
     await hub.cache.set_json(f"llm:history:{chat_id}", history, ttl=60 * 60 * 24 * 7)
 
 
+def _analysis_context_payload(symbol: str, direction: str | None, payload: dict) -> dict:
+    return {
+        "symbol": symbol.upper(),
+        "direction": (direction or payload.get("side") or "").strip().lower() or None,
+        "analysis_summary": str(payload.get("summary") or "").strip(),
+        "key_levels": {
+            "entry": str(payload.get("entry") or "").strip(),
+            "tp1": str(payload.get("tp1") or "").strip(),
+            "tp2": str(payload.get("tp2") or "").strip(),
+            "sl": str(payload.get("sl") or "").strip(),
+            "price": payload.get("price"),
+        },
+        "market_context": payload.get("market_context", {}),
+        "market_context_text": str(payload.get("market_context_text") or "").strip(),
+    }
+
+
+async def _remember_analysis_context(chat_id: int, symbol: str, direction: str | None, payload: dict) -> None:
+    hub = _require_hub()
+    context = _analysis_context_payload(symbol, direction, payload)
+    await hub.cache.set_json(f"last_analysis_context:{chat_id}", context, ttl=300)
+    await hub.cache.set_json(f"last_analysis_context:{chat_id}:{symbol.upper()}", context, ttl=300)
+
+
+async def _recent_analysis_context(chat_id: int) -> dict | None:
+    hub = _require_hub()
+    payload = await hub.cache.get_json(f"last_analysis_context:{chat_id}")
+    return payload if isinstance(payload, dict) else None
+
+
+def _looks_like_analysis_followup(text: str, context: dict | None) -> bool:
+    cleaned = (text or "").strip()
+    if not cleaned or not context:
+        return False
+    lower = cleaned.lower()
+    symbol = str(context.get("symbol") or "").lower()
+    if symbol and re.search(rf"\b{re.escape(symbol)}\b", lower) and FOLLOWUP_VALUE_RE.search(lower):
+        return True
+    if FOLLOWUP_RE.search(lower):
+        return True
+    if lower.endswith("?") and FOLLOWUP_VALUE_RE.search(lower):
+        return True
+    return False
+
+
+async def _llm_analysis_reply(
+    *,
+    payload: dict,
+    symbol: str,
+    direction: str | None,
+    chat_id: int | None,
+) -> str | None:
+    hub = _require_hub()
+    if not hub.llm_client:
+        return None
+
+    market_context_text = str(payload.get("market_context_text") or "").strip()
+    prompt = (
+        f"Build a market reply for {symbol.upper()}.\n"
+        f"User direction bias: {(direction or payload.get('side') or 'none')}.\n"
+        f"Analysis payload JSON: {json.dumps(payload, ensure_ascii=True, default=str)}\n\n"
+        f"Current market context: {market_context_text}\n"
+        "Use this to color your analysis — mention BTC or broader conditions if relevant to the coin's setup.\n"
+        "Write like a trader texting. Keep it tight. No template headings.\n"
+        "Bullets for entry/target/stop are allowed and preferred for clear setups.\n"
+        "End with one sharp line."
+    )
+    history = await _get_chat_history(chat_id) if chat_id is not None else []
+    try:
+        reply = await hub.llm_client.reply(
+            prompt,
+            history=history,
+            max_output_tokens=min(max(int(_settings.openai_max_output_tokens), 260), 460),
+            temperature=max(0.4, float(_settings.openai_temperature)),
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    final = reply.strip() if reply and reply.strip() else None
+    if final and chat_id is not None:
+        await _append_chat_history(chat_id, "user", f"{symbol.upper()} {(direction or payload.get('side') or '').strip()} analysis")
+        await _append_chat_history(chat_id, "assistant", final)
+    return final
+
+
+async def _llm_followup_reply(
+    user_text: str,
+    context: dict,
+    *,
+    chat_id: int,
+) -> str | None:
+    hub = _require_hub()
+    if not hub.llm_client:
+        return None
+
+    cleaned = (user_text or "").strip()
+    if not cleaned:
+        return None
+
+    prompt = (
+        "You are replying to a follow-up message about a recent trade setup.\n"
+        f"Last analysis context JSON: {json.dumps(context, ensure_ascii=True, default=str)}\n"
+        f"User follow-up: {cleaned}\n"
+        "Treat this as continuation of the same setup, not a fresh full report.\n"
+        "If the proposed SL/entry/leverage is weak, say it directly and suggest a better level.\n"
+        "Keep it conversational and concise."
+    )
+    history = await _get_chat_history(chat_id)
+    try:
+        reply = await hub.llm_client.reply(prompt, history=history, max_output_tokens=220)
+    except Exception:  # noqa: BLE001
+        return None
+    final = reply.strip() if reply and reply.strip() else None
+    if final:
+        await _append_chat_history(chat_id, "user", cleaned)
+        await _append_chat_history(chat_id, "assistant", final)
+    return final
+
+
+async def _render_analysis_text(
+    *,
+    payload: dict,
+    symbol: str,
+    direction: str | None,
+    settings: dict,
+    chat_id: int,
+    detailed: bool = False,
+) -> str:
+    try:
+        return await fred.format_as_fred(payload)
+    except Exception:  # noqa: BLE001
+        llm_text = await _llm_analysis_reply(
+            payload=payload,
+            symbol=symbol,
+            direction=direction,
+            chat_id=chat_id,
+        )
+        if llm_text:
+            return llm_text
+        return trade_plan_template(payload, settings, detailed=detailed)
+
+
+async def _send_fred_analysis(message: Message, symbol: str, text: str) -> None:
+    with suppress(Exception):
+        await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+    await asyncio.sleep(1.3)
+    await message.answer(text, reply_markup=analysis_actions(symbol))
+
+
 def _mentions_bot(text: str, bot_username: str | None) -> bool:
     if not bot_username:
         return False
@@ -400,7 +562,8 @@ async def _llm_fallback_reply(user_text: str, settings: dict | None = None, chat
     prompt = (
         f"User style preference: {style}\n"
         f"User message: {cleaned}\n"
-        "Keep answer concise. If this is a crypto setup request that lacks details, ask one short follow-up question."
+        "Keep answer concise. For casual/non-trading messages, use dry wit in 1-2 sentences.\n"
+        "If this is a crypto setup request that lacks details, ask one short follow-up question."
     )
     history = await _get_chat_history(chat_id) if chat_id is not None else []
     try:
@@ -640,13 +803,21 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
             include_news=bool(params.get("include_news") or params.get("news") or params.get("catalysts")),
         )
         await hub.cache.set_json(f"last_analysis:{chat_id}:{symbol}", payload, ttl=1800)
+        await _remember_analysis_context(chat_id, symbol, side, payload)
         await _remember_source_context(
             chat_id,
             source_line=str(payload.get("data_source_line") or ""),
             symbol=symbol,
             context="analysis",
         )
-        await message.answer(trade_plan_template(payload, settings), reply_markup=analysis_actions(symbol))
+        analysis_text = await _render_analysis_text(
+            payload=payload,
+            symbol=symbol,
+            direction=side,
+            settings=settings,
+            chat_id=chat_id,
+        )
+        await _send_fred_analysis(message, symbol, analysis_text)
         return True
 
     if intent == "rsi_scan":
@@ -692,8 +863,6 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
             )
         if not payload.get("items"):
             lines.append("No EMA matches right now.")
-        lines.append("")
-        lines.append("Not financial advice.")
         await _remember_source_context(
             chat_id,
             source_line=str(payload.get("source_line") or ""),
@@ -1090,13 +1259,21 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
                 return True
             raise
         await hub.cache.set_json(f"last_analysis:{chat_id}:{symbol}", payload, ttl=1800)
+        await _remember_analysis_context(chat_id, symbol, direction, payload)
         await _remember_source_context(
             chat_id,
             source_line=str(payload.get("data_source_line") or ""),
             symbol=symbol,
             context="analysis",
         )
-        await message.answer(trade_plan_template(payload, settings), reply_markup=analysis_actions(symbol))
+        analysis_text = await _render_analysis_text(
+            payload=payload,
+            symbol=symbol,
+            direction=direction,
+            settings=settings,
+            chat_id=chat_id,
+        )
+        await _send_fred_analysis(message, symbol, analysis_text)
         return True
 
     if parsed.intent == Intent.SETUP_REVIEW:
@@ -1162,8 +1339,6 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
             )
         if not payload.get("items"):
             lines.append("No EMA matches right now.")
-        lines.append("")
-        lines.append("Not financial advice.")
         await _remember_source_context(
             chat_id,
             source_line=str(payload.get("source_line") or ""),
@@ -1470,8 +1645,7 @@ async def start_cmd(message: Message) -> None:
     hub = _require_hub()
     await hub.user_service.ensure_user(message.chat.id)
     await message.answer(
-        "Market bot online. Send plain text like 'SOL long', 'Coins to watch 5', or 'ping me when BTC hits 70000'.\n"
-        "Not financial advice."
+        "Market bot online. Send plain text like 'SOL long', 'Coins to watch 5', or 'ping me when BTC hits 70000'."
     )
 
 
@@ -2374,13 +2548,21 @@ async def refresh_callback(callback: CallbackQuery) -> None:
             include_news=False,
         )
         await hub.cache.set_json(f"last_analysis:{chat_id}:{symbol}", payload, ttl=1800)
+        await _remember_analysis_context(chat_id, symbol, payload.get("side"), payload)
         await _remember_source_context(
             chat_id,
             source_line=str(payload.get("data_source_line") or ""),
             symbol=symbol,
             context="analysis",
         )
-        await callback.message.answer(trade_plan_template(payload, settings), reply_markup=analysis_actions(symbol))
+        analysis_text = await _render_analysis_text(
+            payload=payload,
+            symbol=symbol,
+            direction=payload.get("side"),
+            settings=settings,
+            chat_id=chat_id,
+        )
+        await _send_fred_analysis(callback.message, symbol, analysis_text)
         await callback.answer("Refreshed")
 
     await _run_with_typing_lock(callback.bot, chat_id, _run)
@@ -2408,13 +2590,22 @@ async def details_callback(callback: CallbackQuery) -> None:
             include_news=True,
         )
         await hub.cache.set_json(f"last_analysis:{chat_id}:{symbol}", payload, ttl=1800)
+        await _remember_analysis_context(chat_id, symbol, payload.get("side"), payload)
         await _remember_source_context(
             chat_id,
             source_line=str(payload.get("data_source_line") or ""),
             symbol=symbol,
             context="analysis",
         )
-        await callback.message.answer(trade_plan_template(payload, settings, detailed=True), reply_markup=analysis_actions(symbol))
+        analysis_text = await _render_analysis_text(
+            payload=payload,
+            symbol=symbol,
+            direction=payload.get("side"),
+            settings=settings,
+            chat_id=chat_id,
+            detailed=True,
+        )
+        await _send_fred_analysis(callback.message, symbol, analysis_text)
         await callback.answer("Detailed mode")
 
     await _run_with_typing_lock(callback.bot, chat_id, _run)
@@ -2530,13 +2721,21 @@ async def quick_analysis_callback(callback: CallbackQuery) -> None:
             include_news=False,
         )
         await hub.cache.set_json(f"last_analysis:{chat_id}:{symbol}", payload, ttl=1800)
+        await _remember_analysis_context(chat_id, symbol, payload.get("side"), payload)
         await _remember_source_context(
             chat_id,
             source_line=str(payload.get("data_source_line") or ""),
             symbol=symbol,
             context="analysis",
         )
-        await callback.message.answer(trade_plan_template(payload, settings), reply_markup=analysis_actions(symbol))
+        analysis_text = await _render_analysis_text(
+            payload=payload,
+            symbol=symbol,
+            direction=payload.get("side"),
+            settings=settings,
+            chat_id=chat_id,
+        )
+        await _send_fred_analysis(callback.message, symbol, analysis_text)
         await callback.answer()
 
     await _run_with_typing_lock(callback.bot, chat_id, _run)
@@ -2565,7 +2764,15 @@ async def quick_analysis_tf_callback(callback: CallbackQuery) -> None:
             include_news=False,
         )
         await hub.cache.set_json(f"last_analysis:{chat_id}:{symbol.upper()}", payload, ttl=1800)
-        await callback.message.answer(trade_plan_template(payload, settings), reply_markup=analysis_actions(symbol.upper()))
+        await _remember_analysis_context(chat_id, symbol.upper(), payload.get("side"), payload)
+        analysis_text = await _render_analysis_text(
+            payload=payload,
+            symbol=symbol.upper(),
+            direction=payload.get("side"),
+            settings=settings,
+            chat_id=chat_id,
+        )
+        await _send_fred_analysis(callback.message, symbol.upper(), analysis_text)
         await callback.answer()
 
     await _run_with_typing_lock(callback.bot, chat_id, _run)
@@ -2857,8 +3064,19 @@ async def route_text(message: Message) -> None:
                     )
                     return
 
-            parsed = parse_message(text)
             settings = await hub.user_service.get_settings(chat_id)
+            followup_context = await _recent_analysis_context(chat_id)
+            if _looks_like_analysis_followup(text, followup_context):
+                followup_reply = await _llm_followup_reply(
+                    text,
+                    followup_context or {},
+                    chat_id=chat_id,
+                )
+                if followup_reply:
+                    await message.answer(followup_reply)
+                    return
+
+            parsed = parse_message(text)
             chat_mode = _openai_chat_mode()
 
             if hub.llm_client and chat_mode == "chat_only":
@@ -2897,13 +3115,17 @@ async def route_text(message: Message) -> None:
                     if llm_reply:
                         await message.answer(llm_reply)
                         return
-                    symbol_hint = _extract_action_symbol_hint(text)
+                    english_phrase = is_likely_english_phrase(text)
+                    symbol_hint = None if english_phrase else _extract_action_symbol_hint(text)
                     prompt = (
                         f"I can route this faster. Pick one for {symbol_hint}:"
                         if symbol_hint
                         else unknown_prompt()
                     )
-                    await message.answer(prompt, reply_markup=smart_action_menu(symbol_hint))
+                    if english_phrase:
+                        await message.answer(prompt)
+                    else:
+                        await message.answer(prompt, reply_markup=smart_action_menu(symbol_hint))
                     return
                 if parsed.intent == Intent.ANALYSIS and not parsed.entities.get("symbol"):
                     kb = simple_followup(
@@ -2925,8 +3147,12 @@ async def route_text(message: Message) -> None:
                 if llm_reply:
                     await message.answer(llm_reply)
                     return
-                symbol_hint = _extract_action_symbol_hint(text)
-                await message.answer(parsed.followup_question or unknown_prompt(), reply_markup=smart_action_menu(symbol_hint))
+                english_phrase = is_likely_english_phrase(text)
+                symbol_hint = None if english_phrase else _extract_action_symbol_hint(text)
+                if english_phrase:
+                    await message.answer(parsed.followup_question or unknown_prompt())
+                else:
+                    await message.answer(parsed.followup_question or unknown_prompt(), reply_markup=smart_action_menu(symbol_hint))
                 return
             except Exception as exc:  # noqa: BLE001
                 await message.answer(
