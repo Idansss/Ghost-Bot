@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from dataclasses import dataclass
@@ -56,13 +56,17 @@ CRITICAL ROUTING RULES — read carefully:
 2. OPINION / PREDICTION QUESTIONS always → "general_chat":
    - "where do you think BTC is going", "what do you think about the market", "where is the next leg"
    - "is BTC bullish", "will ETH pump", "do you think SOL will recover"
+   - "is BTC a good buy", "should I buy SOL", "is now a good time to enter"
    - These are conversational — not chart/analysis commands.
 
-3. MARKET ANALYSIS only when user gives a clear COMMAND like:
+3. GREETINGS / CASUAL CHAT always → "smalltalk":
+   - "gm", "hello", "hey", "how are you", "good morning", "sup"
+
+4. MARKET ANALYSIS only when user gives a clear COMMAND like:
    - "BTC long", "ETH short 4h", "analyze SOL", "SOL 1h"
    - NOT when asking a question about price direction in natural language.
 
-4. Other routing rules:
+5. Other routing rules:
    - Crypto news ("latest crypto news", "news today", "what's happening") → "news_digest" params {"range":"today","limit":6}
    - CPI/FOMC/macro updates → "news_digest" params {"topic":"macro","mode":"macro","limit":6}
    - "watch btc" or "btc 4h" → "watch_asset" {"symbol":"BTC","timeframe":"4h"}
@@ -150,33 +154,6 @@ class LLMClient:
     def __post_init__(self) -> None:
         self.client = AsyncOpenAI(api_key=self.api_key)
 
-    def _extract_output_text(self, resp: Any) -> str:
-        output_text = getattr(resp, "output_text", None)
-        if isinstance(output_text, str) and output_text.strip():
-            return output_text.strip()
-
-        parts: list[str] = []
-        for item in (getattr(resp, "output", None) or []):
-            item_type = getattr(item, "type", None)
-            if item_type is None and isinstance(item, dict):
-                item_type = item.get("type")
-            if item_type != "message":
-                continue
-
-            content = getattr(item, "content", None)
-            if content is None and isinstance(item, dict):
-                content = item.get("content")
-            for piece in content or []:
-                piece_type = getattr(piece, "type", None)
-                piece_text = getattr(piece, "text", None)
-                if isinstance(piece, dict):
-                    piece_type = piece_type or piece.get("type")
-                    piece_text = piece_text or piece.get("text")
-                if piece_type in ("output_text", "text") and isinstance(piece_text, str):
-                    parts.append(piece_text)
-
-        return "\n".join([p for p in parts if p.strip()]).strip()
-
     def _extract_json_payload(self, raw_text: str) -> dict:
         text = (raw_text or "").strip()
         if not text:
@@ -209,26 +186,33 @@ class LLMClient:
                 messages.append({"role": role, "content": content})
         messages.append({"role": "user", "content": user_text})
 
-        resp = await self.client.responses.create(
-            model=self.model,
-            input=messages,
-            max_output_tokens=max_output_tokens or self.max_output_tokens,
-            temperature=self.temperature if temperature is None else float(temperature),
-        )
-        text = self._extract_output_text(resp)
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                max_tokens=max_output_tokens or self.max_output_tokens,
+                temperature=self.temperature if temperature is None else float(temperature),
+            )
+            text = (resp.choices[0].message.content or "").strip()
+        except Exception:  # noqa: BLE001
+            text = ""
         return text or "Signal unclear. Give me ticker + timeframe and I will map it."
 
     async def route_message(self, user_text: str) -> dict:
-        resp = await self.client.responses.create(
-            model=self.router_model or self.model,
-            input=[
-                {"role": "system", "content": ROUTER_SYSTEM},
-                {"role": "user", "content": user_text},
-            ],
-            max_output_tokens=260,
-            temperature=0.0,
-        )
-        raw = self._extract_output_text(resp)
+        try:
+            resp = await self.client.chat.completions.create(
+                model=self.router_model or self.model,
+                messages=[
+                    {"role": "system", "content": ROUTER_SYSTEM},
+                    {"role": "user", "content": user_text},
+                ],
+                max_tokens=260,
+                temperature=0.0,
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+        except Exception:  # noqa: BLE001
+            return {"intent": "general_chat", "confidence": 0.0, "params": {}}
+
         payload = self._extract_json_payload(raw)
         try:
             validated = RouterPayload.model_validate(payload)

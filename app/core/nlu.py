@@ -284,7 +284,23 @@ COMMON_WORDS_NOT_TICKERS = {
     "like",
     "use",
     "used",
-    # descriptors
+    "recover",
+    "recover",
+    "hitting",
+    "heading",
+    "expecting",
+    "feel",
+    "feels",
+    "seem",
+    "seems",
+    "think",
+    "guess",
+    "reckon",
+    "believe",
+    "hope",
+    "happen",
+    "happening",
+    # descriptors / adverbs
     "good",
     "bad",
     "best",
@@ -309,10 +325,27 @@ COMMON_WORDS_NOT_TICKERS = {
     "also",
     "then",
     "now",
+    "today",
+    "right",
+    "still",
+    "already",
+    "again",
+    "ever",
+    "never",
+    "always",
+    "maybe",
+    "probably",
+    "currently",
+    "actually",
+    "basically",
+    "generally",
+    "typically",
+    "usually",
     # trading concepts (words — not tickers)
     "trading",
     "trade",
     "market",
+    "markets",
     "crypto",
     "price",
     "coin",
@@ -357,10 +390,44 @@ COMMON_WORDS_NOT_TICKERS = {
     "bearish",
     "pump",
     "dump",
+    "moon",
+    "mooning",
+    "dip",
+    "dipping",
+    "dump",
+    "dumping",
+    "weak",
+    "strong",
+    "strength",
+    "weakness",
+    "rally",
+    "crash",
+    "correction",
+    "consolidate",
+    "consolidation",
+    "liquidity",
+    "manipulation",
+    "accumulate",
+    "accumulation",
+    "distribution",
+    "leverage",
+    "liquidation",
+    "margin",
+    "futures",
+    "spot",
+    "exchange",
     # common abbreviations people ask ABOUT (not tickers)
     "dca",  # dollar cost averaging — people ask "what is dca"
     "tp",   # take profit — asked as a concept
     "sl",   # stop loss — asked as a concept
+    "rr",   # risk/reward — asked as a concept
+    "pnl",  # profit and loss — asked as a concept
+    "ath",  # all time high
+    "atl",  # all time low
+    "roi",  # return on investment
+    "fud",  # fear uncertainty doubt
+    "fomo", # fear of missing out
+    "hodl", # hold on for dear life
 }
 
 ENGLISH_PHRASE_EXCLUDE_RE = re.compile(
@@ -545,11 +612,16 @@ def is_likely_english_phrase(text: str) -> bool:
     # Explicit definitional / conceptual questions — highest priority
     # e.g. "what is dca", "what is the meaning of sl", "explain tp", "define leverage"
     DEFINITION_RE = re.compile(
-        r"^\s*(what\s+(is|are|does)|what('s| is)\s+the\s+(meaning|definition|concept)\s+of|"
+        r"^\s*(what\s+(is|are|does|was)|what('s| is)\s+the\s+(meaning|definition|concept)\s+of|"
         r"explain\s+|define\s+|how\s+does\s+|how\s+do\s+|what\s+do\s+you\s+(mean|think)|"
         r"where\s+do\s+you\s+think|what\s+do\s+you\s+think|do\s+you\s+think|"
         r"why\s+(is|are|do|did)|who\s+(is|are)|when\s+(is|did|will)|tell\s+me\s+(about|what)|"
-        r"give\s+me\s+|how\s+is\s+|how\s+are\s+)",
+        r"give\s+me\s+|how\s+is\s+|how\s+are\s+|how\s+much\s+|how\s+long\s+|"
+        r"should\s+i\s+|would\s+you\s+|is\s+it\s+(good|bad|safe|worth|a\s+good)|"
+        r"is\s+(now|this)\s+(a\s+)?(good|bad)|can\s+you\s+|could\s+you\s+|"
+        r"will\s+(it|btc|eth|sol|crypto|the\s+market)|"
+        r"is\s+\w+\s+(going|heading|moving|pumping|dumping|recovering|dead|done|good|safe)|"
+        r"am\s+i\s+|are\s+we\s+)",
         re.IGNORECASE,
     )
     if DEFINITION_RE.match(text.strip()):
@@ -565,8 +637,15 @@ def is_likely_english_phrase(text: str) -> bool:
             return True
 
     # Short 2-word questions starting with a question word: "what tp", "explain sl"
-    if len(words) == 2 and words[0] in {"what", "explain", "define", "describe", "meaning"}:
+    if len(words) == 2 and words[0] in {"what", "explain", "define", "describe", "meaning", "how"}:
         return True
+
+    # Questions ending with "?" that start with conversational words
+    stripped_lower = text.strip().rstrip("!?.,")
+    if text.strip().endswith("?"):
+        question_starters = {"will", "should", "is", "are", "can", "could", "would", "do", "does", "did"}
+        if words and words[0] in question_starters:
+            return True
 
     return False
 
