@@ -364,8 +364,38 @@ def create_app() -> FastAPI:
 
         payload = await req.json()
         update = Update.model_validate(payload)
-        await app.state.dp.feed_update(app.state.bot, update)
-        return {"ok": True}
+        try:
+            await app.state.dp.feed_update(app.state.bot, update)
+            return {"ok": True}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "telegram_update_failed",
+                extra={
+                    "event": "telegram_update_failed",
+                    "error": str(exc),
+                    "update_id": payload.get("update_id"),
+                },
+            )
+            # Always return 200-style payload so one bad update does not block the whole webhook queue.
+            try:
+                chat_id = None
+                msg = payload.get("message") if isinstance(payload, dict) else None
+                if isinstance(msg, dict):
+                    chat = msg.get("chat") if isinstance(msg.get("chat"), dict) else {}
+                    chat_id = chat.get("id")
+                if chat_id is None and isinstance(payload, dict):
+                    cq = payload.get("callback_query") if isinstance(payload.get("callback_query"), dict) else {}
+                    cqm = cq.get("message") if isinstance(cq.get("message"), dict) else {}
+                    cqchat = cqm.get("chat") if isinstance(cqm.get("chat"), dict) else {}
+                    chat_id = cqchat.get("id")
+                if chat_id is not None:
+                    await app.state.bot.send_message(
+                        chat_id=chat_id,
+                        text="Request failed on my side. Try again in a few seconds.",
+                    )
+            except Exception:  # noqa: BLE001
+                pass
+            return {"ok": True, "error": "update_failed"}
 
     @app.post("/test/mock-price")
     async def mock_price(payload: dict) -> dict:
