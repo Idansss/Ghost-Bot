@@ -611,7 +611,15 @@ async def _llm_fallback_reply(user_text: str, settings: dict | None = None, chat
 
     prompt = (
         f"User style preference: {style}\n"
-        f"User message: {cleaned}\n"
+        f"User message: {cleaned}\n\n"
+        "BOT CAPABILITIES (use this to answer how-to/feature questions):\n"
+        "- Alerts: type 'alert BTC 100000 above' or tap Create Alert button then send 'BTC 100000'\n"
+        "- Analysis: type 'BTC long' or 'ETH short 4h'\n"
+        "- Watchlist: 'coins to watch', 'top movers'\n"
+        "- News: 'latest crypto news', 'macro update'\n"
+        "- Price: /price BTC or just 'BTC price'\n"
+        "- RSI/EMA scan: 'RSI oversold 4h', 'EMA 200 above'\n\n"
+        "If the user is asking WHY a bot feature failed or how to use something — answer that directly.\n"
         "Keep answer concise. For casual/non-trading messages, use dry wit in 1-2 sentences.\n"
         "If this is a crypto setup request that lacks details, ask one short follow-up question."
     )
@@ -635,10 +643,24 @@ _MARKET_QUESTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Questions about the bot itself — must never be treated as market questions
+_BOT_META_RE = re.compile(
+    r"\b(alert\s+creat|creat\s+alert|alert\s+not|button\s+not|command\s+not|"
+    r"bot\s+not|bot\s+down|not\s+working|isn'?t\s+work|not\s+respond|"
+    r"why\s+is\s+(the\s+)?(alert|button|command|bot|feature)|"
+    r"how\s+do\s+i\s+(create|set|use|make)|what\s+commands|what\s+can\s+you|"
+    r"how\s+to\s+(create|set|use)|are\s+you\s+working|still\s+(not\s+)?work|"
+    r"failing|broken|feature\s+not|doesn'?t\s+work)\b",
+    re.IGNORECASE,
+)
+
 
 def _looks_like_market_question(text: str) -> bool:
     words = re.findall(r"\w+", text.lower())
     if len(words) < 2:
+        return False
+    # Bot-meta questions must never be routed to the market chat handler
+    if _BOT_META_RE.search(text):
         return False
     return bool(_MARKET_QUESTION_RE.search(text))
 
