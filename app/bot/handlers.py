@@ -610,18 +610,14 @@ async def _llm_fallback_reply(user_text: str, settings: dict | None = None, chat
             style = str(settings.get("tone_mode", "wild")).lower()
 
     prompt = (
-        f"User style preference: {style}\n"
         f"User message: {cleaned}\n\n"
-        "BOT CAPABILITIES (use this to answer how-to/feature questions):\n"
-        "- Alerts: type 'alert BTC 100000 above' or tap Create Alert button then send 'BTC 100000'\n"
-        "- Analysis: type 'BTC long' or 'ETH short 4h'\n"
+        "Answer this directly and helpfully. Never ask the user for clarification — give your best answer now.\n"
+        "BOT CAPABILITIES (use this if they ask how to use features):\n"
+        "- Alerts: 'alert BTC 100000 above' or tap Create Alert button\n"
+        "- Analysis: 'BTC long' or 'ETH short 4h'\n"
         "- Watchlist: 'coins to watch', 'top movers'\n"
-        "- News: 'latest crypto news', 'macro update'\n"
-        "- Price: /price BTC or just 'BTC price'\n"
-        "- RSI/EMA scan: 'RSI oversold 4h', 'EMA 200 above'\n\n"
-        "If the user is asking WHY a bot feature failed or how to use something — answer that directly.\n"
-        "Keep answer concise. For casual/non-trading messages, use dry wit in 1-2 sentences.\n"
-        "If this is a crypto setup request that lacks details, ask one short follow-up question."
+        "- News: 'latest crypto news'\n"
+        "- Price: /price BTC\n"
     )
     history = await _get_chat_history(chat_id) if chat_id is not None else []
     try:
@@ -639,7 +635,16 @@ _MARKET_QUESTION_RE = re.compile(
     r"\b(pump|dump|moon|rug|rekt|bleed|crash|rally|bull|bear|market|btc|bitcoin|eth|ethereum|"
     r"crypto|price|move|movement|run|drop|dip|bounce|trend|happening|why|explain|think|feel|"
     r"going|direction|outlook|setup|narrative|sentiment|vibe|catalys|news|macro|tariff|"
-    r"inflation|rate|fed|fomc|cpi|pce|blackrock|etf|liquidat|funding|dominan)\b",
+    r"inflation|rate|fed|fomc|cpi|pce|blackrock|etf|liquidat|funding|dominan|"
+    # expanded: general "which coin / what to watch / what to buy" questions
+    r"coin|coins|token|tokens|alt|alts|altcoin|gem|gems|pick|picks|"
+    r"watch|looking|look|buy|sell|trade|play|plays|long|short|"
+    r"which|what|best|top|good|strong|weak|hot|cold|"
+    r"portfolio|invest|hold|accumulate|dca|entry|exit|"
+    r"solana|sol|bnb|xrp|matic|avax|ada|dot|link|doge|shib|pepe|"
+    r"layer|defi|nft|meme|perp|spot|futures|leverage|"
+    r"dominance|volume|liquidity|whale|orderbook|ob|candle|chart|"
+    r"resistance|support|ema|rsi|macd|bollinger)\b",
     re.IGNORECASE,
 )
 
@@ -662,6 +667,20 @@ def _looks_like_market_question(text: str) -> bool:
     # Bot-meta questions must never be routed to the market chat handler
     if _BOT_META_RE.search(text):
         return False
+    # Single-word checks that strongly indicate crypto intent without needing a keyword match
+    lower = text.lower()
+    crypto_intent_phrases = (
+        "which coin", "what coin", "best coin", "top coin",
+        "what to buy", "what should i buy", "should i buy",
+        "what to watch", "what should i watch", "worth watching",
+        "worth buying", "worth trading", "what to trade",
+        "good trade", "good play", "where is the market",
+        "how is the market", "what is happening", "what's happening",
+        "what happened", "what do you think", "give me a call",
+        "market update", "quick update", "anything good",
+    )
+    if any(phrase in lower for phrase in crypto_intent_phrases):
+        return True
     return bool(_MARKET_QUESTION_RE.search(text))
 
 
@@ -716,11 +735,12 @@ async def _llm_market_chat_reply(
 
     prompt = (
         f"{context_block}"
-        f"User style preference: {style}\n"
         f"User question: {cleaned}\n\n"
-        "Using the live data above, answer like a sharp, well-informed trader who connects "
-        "the dots between news events and price action. Be direct and specific — name the "
-        "catalysts, give a clear read on the market. No disclaimers. End with one sharp line."
+        "Answer directly and comprehensively using the live data above. "
+        "Give specific coins, prices, catalysts, and your actual directional take. "
+        "If asked which coins to watch — name them with prices and reasons. "
+        "Never ask the user for clarification. Never start with filler phrases. "
+        "Use Telegram HTML formatting: <b>bold</b> for coin names and key levels, <i>italic</i> for closing line."
     )
 
     history = await _get_chat_history(chat_id) if chat_id is not None else []
@@ -728,7 +748,7 @@ async def _llm_market_chat_reply(
         reply = await hub.llm_client.reply(
             prompt,
             history=history,
-            max_output_tokens=min(max(int(_settings.openai_max_output_tokens), 300), 500),
+            max_output_tokens=min(max(int(_settings.openai_max_output_tokens), 500), 800),
             temperature=max(0.5, float(_settings.openai_temperature)),
         )
     except Exception:  # noqa: BLE001
@@ -943,34 +963,18 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
     if confidence < _settings.openai_router_min_confidence:
         return False
 
-    if intent == "smalltalk":
+    if intent in {"smalltalk", "market_chat", "general_chat"}:
         with suppress(Exception):
             await message.bot.send_chat_action(chat_id, ChatAction.TYPING)
-        if _looks_like_market_question(raw_text):
-            llm_reply = await _llm_market_chat_reply(raw_text, settings, chat_id=chat_id)
-        else:
-            llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
-        await message.answer(llm_reply or smalltalk_reply(settings))
-        return True
-
-    if intent == "market_chat":
-        with suppress(Exception):
-            await message.bot.send_chat_action(chat_id, ChatAction.TYPING)
+        # Always use live-data path — Claude/Grok with market context answers everything better
         llm_reply = await _llm_market_chat_reply(raw_text, settings, chat_id=chat_id)
         if llm_reply:
             await message.answer(llm_reply)
             return True
-        return False
-
-    if intent == "general_chat":
-        with suppress(Exception):
-            await message.bot.send_chat_action(chat_id, ChatAction.TYPING)
-        if _looks_like_market_question(raw_text):
-            llm_reply = await _llm_market_chat_reply(raw_text, settings, chat_id=chat_id)
-        else:
+        # Bot-meta questions (how-to, features) fall back to plain reply
+        if _BOT_META_RE.search(raw_text):
             llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
-        if llm_reply:
-            await message.answer(llm_reply)
+            await message.answer(llm_reply or smalltalk_reply(settings))
             return True
         return False
 
@@ -3553,14 +3557,11 @@ async def route_text(message: Message) -> None:
             chat_mode = _openai_chat_mode()
 
             if hub.llm_client and chat_mode == "chat_only":
-                if _looks_like_market_question(text):
-                    llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
-                else:
-                    llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
+                llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
                     await message.answer(llm_reply)
                     return
-                await message.answer("OpenAI is temporarily unavailable. Try again in a few seconds.")
+                await message.answer("signal unclear right now. try again in a sec.")
                 return
 
             if hub.llm_client and chat_mode == "llm_first":
@@ -3571,10 +3572,7 @@ async def route_text(message: Message) -> None:
                             return
                     except Exception:  # noqa: BLE001
                         pass
-                if _looks_like_market_question(text):
-                    llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
-                else:
-                    llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
+                llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
                     await message.answer(llm_reply)
                     return
@@ -3590,24 +3588,19 @@ async def route_text(message: Message) -> None:
 
             if parsed.requires_followup:
                 if parsed.intent == Intent.UNKNOWN:
-                    if _looks_like_market_question(text):
-                        llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
-                    else:
-                        llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
+                    llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                     if llm_reply:
                         await message.answer(llm_reply)
                         return
                     english_phrase = is_likely_english_phrase(text)
                     symbol_hint = None if english_phrase else _extract_action_symbol_hint(text)
-                    prompt = (
-                        f"I can route this faster. Pick one for {symbol_hint}:"
-                        if symbol_hint
-                        else unknown_prompt()
-                    )
-                    if english_phrase:
-                        await message.answer(prompt)
+                    if symbol_hint:
+                        await message.answer(
+                            f"pick an action for <b>{symbol_hint}</b>:",
+                            reply_markup=smart_action_menu(symbol_hint),
+                        )
                     else:
-                        await message.answer(prompt, reply_markup=smart_action_menu(symbol_hint))
+                        await message.answer(unknown_prompt(), reply_markup=smart_action_menu(None))
                     return
                 if parsed.intent == Intent.ANALYSIS and not parsed.entities.get("symbol"):
                     kb = simple_followup(
@@ -3625,19 +3618,15 @@ async def route_text(message: Message) -> None:
             try:
                 if await _handle_parsed_intent(message, parsed, settings):
                     return
-                if _looks_like_market_question(text):
-                    llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
-                else:
-                    llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
+                llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
                     await message.answer(llm_reply)
                     return
-                english_phrase = is_likely_english_phrase(text)
-                symbol_hint = None if english_phrase else _extract_action_symbol_hint(text)
-                if english_phrase:
-                    await message.answer(parsed.followup_question or unknown_prompt())
-                else:
-                    await message.answer(parsed.followup_question or unknown_prompt(), reply_markup=smart_action_menu(symbol_hint))
+                symbol_hint = _extract_action_symbol_hint(text)
+                await message.answer(
+                    parsed.followup_question or unknown_prompt(),
+                    reply_markup=smart_action_menu(symbol_hint) if symbol_hint else None,
+                )
                 return
             except Exception as exc:  # noqa: BLE001
                 logger.exception("handle_parsed_intent_error", extra={"event": "handle_parsed_intent_error", "chat_id": chat_id})
