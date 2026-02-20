@@ -1785,7 +1785,12 @@ async def alert_cmd(message: Message) -> None:
 @router.message(Command("alerts"))
 async def alerts_cmd(message: Message) -> None:
     hub = _require_hub()
-    alerts = await hub.alerts_service.list_alerts(message.chat.id)
+    try:
+        alerts = await hub.alerts_service.list_alerts(message.chat.id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("alerts_list_failed", extra={"event": "alerts_list_failed", "error": str(exc), "chat_id": message.chat.id})
+        await message.answer("Alerts are temporarily unavailable. Try again in a few seconds.")
+        return
     if not alerts:
         await message.answer("No active alerts.")
         return
@@ -1811,14 +1816,24 @@ async def alertdel_cmd(message: Message) -> None:
     text = (message.text or "").strip()
     m = re.search(r"^/alertdel\s+(\d+)\s*$", text, re.IGNORECASE)
     if not m:
-        alerts = await hub.alerts_service.list_alerts(message.chat.id)
+        try:
+            alerts = await hub.alerts_service.list_alerts(message.chat.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("alertdel_list_failed", extra={"event": "alertdel_list_failed", "error": str(exc), "chat_id": message.chat.id})
+            await message.answer("Alerts are temporarily unavailable. Try again in a few seconds.")
+            return
         if not alerts:
             await message.answer("No active alerts.", reply_markup=alert_quick_menu())
             return
         options = [(f"Delete #{a.id}", f"cmd:alertdel:{a.id}") for a in alerts[:8]]
         await message.answer("Tap an alert to delete.", reply_markup=simple_followup(options))
         return
-    ok = await hub.alerts_service.delete_alert(message.chat.id, int(m.group(1)))
+    try:
+        ok = await hub.alerts_service.delete_alert(message.chat.id, int(m.group(1)))
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("alertdel_failed", extra={"event": "alertdel_failed", "error": str(exc), "chat_id": message.chat.id})
+        await message.answer("Delete failed on my side. Try again in a few seconds.")
+        return
     await message.answer("Deleted." if ok else "Alert not found.")
 
 
@@ -1871,10 +1886,7 @@ async def margin_cmd(message: Message) -> None:
     args = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
     text = args.strip()
     if not text:
-        await message.answer(
-            "Usage: /margin <setup text>\n"
-            "Example: /margin long BTC entry 66300 stop 64990 targets 69200 72000 margin 200 leverage 5"
-        )
+        await message.answer("Choose setup input mode.", reply_markup=setup_quick_menu())
         return
     await _dispatch_command_text(message, text)
 
@@ -1885,10 +1897,7 @@ async def pnl_cmd(message: Message) -> None:
     args = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
     text = args.strip()
     if not text:
-        await message.answer(
-            "Usage: /pnl <setup text>\n"
-            "Example: /pnl long ETH entry 2100 stop 2050 targets 2200 2300 amount 100 leverage 10"
-        )
+        await message.answer("Choose setup input mode.", reply_markup=setup_quick_menu())
         return
     await _dispatch_command_text(message, text)
 

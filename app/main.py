@@ -86,6 +86,47 @@ async def _sync_bot_commands(bot: Bot) -> None:
     await bot.set_my_commands(commands)
 
 
+async def _ensure_alert_schema_compat() -> None:
+    """Hot-fix missing alert source columns on older DBs."""
+    try:
+        async with AsyncSessionLocal() as session:
+            bind = session.get_bind()
+            dialect = (bind.dialect.name or "").lower() if bind is not None else ""
+            if dialect != "postgresql":
+                return
+
+            result = await session.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name='alerts' "
+                    "AND column_name IN ('source_exchange','instrument_id','market_kind')"
+                )
+            )
+            existing = {str(row[0]) for row in result.all()}
+            stmts: list[str] = []
+            if "source_exchange" not in existing:
+                stmts.append("ALTER TABLE alerts ADD COLUMN source_exchange VARCHAR(20)")
+            if "instrument_id" not in existing:
+                stmts.append("ALTER TABLE alerts ADD COLUMN instrument_id VARCHAR(40)")
+            if "market_kind" not in existing:
+                stmts.append("ALTER TABLE alerts ADD COLUMN market_kind VARCHAR(10)")
+
+            for stmt in stmts:
+                await session.execute(text(stmt))
+            if stmts:
+                await session.execute(text("CREATE INDEX IF NOT EXISTS ix_alerts_source_exchange ON alerts (source_exchange)"))
+                await session.commit()
+                logger.info(
+                    "alert_schema_hotfix_applied",
+                    extra={"event": "alert_schema_hotfix_applied", "changes": len(stmts)},
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "alert_schema_hotfix_failed",
+            extra={"event": "alert_schema_hotfix_failed", "error": str(exc)},
+        )
+
+
 def build_hub(settings: Settings, bot: Bot, cache: RedisCache, http: ResilientHTTPClient) -> ServiceHub:
     rate_limiter = RateLimiter(cache)
     llm_client = None
@@ -248,6 +289,8 @@ def build_hub(settings: Settings, bot: Bot, cache: RedisCache, http: ResilientHT
 async def lifespan(app: FastAPI):
     settings = get_settings()
     setup_logging(settings.log_level)
+
+    await _ensure_alert_schema_compat()
 
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is required")
