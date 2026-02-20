@@ -116,6 +116,9 @@ CRITICAL ROUTING RULES — read carefully:
                "ping me when sol hits 200" → alert_create {"symbol":"SOL","price":200}
    - "list alerts" → "alert_list"; "clear/reset alerts" → "alert_clear"
    - "remove my SOL alert" → "alert_delete" {"symbol":"SOL"}
+   - Trade setup review / "what do you think about this trade" with levels (TP/SL/entry/leverage) → "setup_review"
+     params: {"symbol":"X","entry":"market" or numeric,"stop":Y,"tp":[Z],"leverage":N,"side":"long|short"}
+     IMPORTANT: if entry says "Market Price" / "market" / "MP" → set entry param to "market" (string)
    - Setup/trade math with levels → "setup_review" or "trade_math"
    - Giveaway commands → giveaway_* intents
    - When uncertain → "general_chat" with low confidence

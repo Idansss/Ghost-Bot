@@ -1189,7 +1189,8 @@ def parse_message(text: str) -> ParsedMessage:
         )
     )
     setup_hint = setup_signal and (
-        "long" in lower or "short" in lower or "setup" in lower or "play" in lower or math_signal
+        "long" in lower or "short" in lower or "setup" in lower or "play" in lower
+        or "trade" in lower or "think about" in lower or "review" in lower or math_signal
     )
     if setup_hint:
         symbols = _extract_symbols(stripped)

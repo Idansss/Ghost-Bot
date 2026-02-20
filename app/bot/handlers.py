@@ -1256,13 +1256,25 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
         entry = _as_float(params.get("entry"))
         stop = _as_float(params.get("stop") or params.get("sl"))
         targets = _as_float_list(params.get("targets") or params.get("tp"))
+        leverage = _as_float(params.get("leverage"))
+
+        # "Market Price" / "market order" / "MP" as entry → fetch live price
+        if entry is None and symbol and re.search(
+            r"\bmarket\s*(?:price|order)?\b|\bmp\b|\bat\s+market\b", raw_text, re.IGNORECASE
+        ):
+            with suppress(Exception):
+                price_data = await hub.market_router.get_price(symbol)
+                entry = _as_float(price_data.get("price") or price_data.get("last"))
+
         if not symbol or entry is None or stop is None or not targets:
-            await message.answer("Need symbol, entry, stop, and at least one target.")
+            await message.answer(
+                "need <b>symbol</b>, <b>entry</b>, <b>stop</b>, and at least one <b>target</b>.\n"
+                "e.g. <code>SNXUSDT entry 0.028 stop 0.036 tp 0.022</code>"
+            )
             return True
         direction = str(params.get("side") or params.get("direction") or "").strip().lower() or None
         timeframe = str(params.get("timeframe", "1h")).strip() or "1h"
         amount_usd = _as_float(params.get("amount") or params.get("amount_usd") or params.get("margin"))
-        leverage = _as_float(params.get("leverage"))
         payload = await hub.setup_review_service.review(
             symbol=symbol,
             timeframe=timeframe,
@@ -1511,12 +1523,32 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         tfs = parsed.entities.get("timeframes") or []
         if tfs:
             timeframe = tfs[0]
+        symbol = parsed.entities.get("symbol")
+        entry = _as_float(parsed.entities.get("entry"))
+        stop = _as_float(parsed.entities.get("stop"))
+        targets = [float(x) for x in (parsed.entities.get("targets") or [])]
+
+        # "Market Price" / "market order" as entry → fetch live price
+        raw = message.text or ""
+        if entry is None and symbol and re.search(
+            r"\bmarket\s*(?:price|order)?\b|\bmp\b|\bat\s+market\b", raw, re.IGNORECASE
+        ):
+            with suppress(Exception):
+                price_data = await hub.market_router.get_price(symbol)
+                entry = _as_float(price_data.get("price") or price_data.get("last"))
+
+        if not symbol or entry is None or stop is None or not targets:
+            await message.answer(
+                "need <b>symbol</b>, <b>entry</b>, <b>stop</b>, and at least one <b>target</b>.\n"
+                "e.g. <code>SNXUSDT entry 0.028 stop 0.036 tp 0.022</code>"
+            )
+            return True
         payload = await hub.setup_review_service.review(
-            symbol=parsed.entities["symbol"],
+            symbol=symbol,
             timeframe=timeframe,
-            entry=float(parsed.entities["entry"]),
-            stop=float(parsed.entities["stop"]),
-            targets=[float(x) for x in parsed.entities["targets"]],
+            entry=float(entry),
+            stop=float(stop),
+            targets=targets,
             direction=parsed.entities.get("direction"),
             amount_usd=parsed.entities.get("amount_usd"),
             leverage=parsed.entities.get("leverage"),
