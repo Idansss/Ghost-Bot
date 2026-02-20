@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, Update
 from fastapi import FastAPI, HTTPException, Request
 from sqlalchemy import text
@@ -329,7 +331,10 @@ async def lifespan(app: FastAPI):
     cache = RedisCache(settings.redis_url)
     http = ResilientHTTPClient()
 
-    bot = Bot(token=settings.telegram_bot_token)
+    bot = Bot(
+        token=settings.telegram_bot_token,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
     dp = Dispatcher()
 
     hub = build_hub(settings, bot, cache, http)

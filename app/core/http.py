@@ -88,3 +88,28 @@ class ResilientHTTPClient:
         self, url: str, payload: dict[str, Any], headers: dict[str, str] | None = None
     ) -> Any:
         return await self._request_json("POST", url, headers=headers, json=payload)
+
+    async def get_text(
+        self, url: str, params: dict[str, Any] | None = None, headers: dict[str, str] | None = None
+    ) -> str:
+        host = httpx.URL(url).host or "unknown"
+        if self._is_open(host):
+            raise UpstreamError(f"Circuit open for {host}")
+
+        last_error: Exception | None = None
+        for attempt in range(self.retries + 1):
+            try:
+                response = await self._client.request("GET", url, params=params, headers=headers)
+                if response.status_code in (429, 500, 502, 503, 504):
+                    raise UpstreamError(f"Transient status {response.status_code}")
+                response.raise_for_status()
+                self._record_success(host)
+                return response.text
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                self._record_failure(host)
+                if attempt >= self.retries:
+                    break
+                await asyncio.sleep(self.backoff_base * (2**attempt))
+
+        raise UpstreamError(f"Failed to fetch {url}: {last_error}")

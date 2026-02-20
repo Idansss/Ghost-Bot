@@ -45,6 +45,8 @@ class Intent(str, Enum):
 SYMBOL_RE = re.compile(r"\b[A-Za-z]{2,12}\b")
 TIMEFRAME_RE = re.compile(r"\b(1m|3m|5m|15m|30m|1h|2h|4h|6h|12h|1d|3d|1w|daily|weekly|monthly)\b", re.IGNORECASE)
 PRICE_RE = re.compile(r"(?<!\w)((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?!\w)")
+# Matches shorthand prices like 66k, 1.5k, 2.3m, 100K, 4.5M
+_SHORTHAND_PRICE_RE = re.compile(r"\b(\d+(?:\.\d+)?)\s*([kKmM])\b")
 SOL_ADDRESS_RE = re.compile(r"\b[1-9A-HJ-NP-Za-km-z]{32,44}\b")
 TRON_ADDRESS_RE = re.compile(r"\bT[1-9A-HJ-NP-Za-km-z]{33}\b")
 SMALLTALK_RE = re.compile(
@@ -732,8 +734,19 @@ def _extract_symbols(text: str) -> list[str]:
 
 def _extract_prices(text: str) -> list[float]:
     prices = []
+    # Standard numbers (e.g. 66000, 1,500, 0.00635)
     for p in PRICE_RE.findall(text):
-        prices.append(float(p.replace(",", "")))
+        try:
+            prices.append(float(p.replace(",", "")))
+        except ValueError:
+            continue
+    # Shorthand prices (e.g. 66k → 66000, 1.5m → 1500000)
+    for m in _SHORTHAND_PRICE_RE.finditer(text):
+        base = float(m.group(1))
+        suffix = m.group(2).lower()
+        value = base * 1_000 if suffix == "k" else base * 1_000_000
+        if value not in prices:
+            prices.append(value)
     return prices
 
 
@@ -744,12 +757,19 @@ def _extract_prices_with_positions(text: str) -> list[tuple[float, int, int]]:
         start = m.start(1)
         end = m.end(1)
         after = text[end : end + 1].lower()
-        if after == "r":
+        if after in {"r", "k", "m"}:  # skip if followed by k/m (handled below)
             continue
         try:
             out.append((float(raw.replace(",", "")), start, end))
         except ValueError:
             continue
+    # Also collect shorthand prices with positions
+    for m in _SHORTHAND_PRICE_RE.finditer(text):
+        base = float(m.group(1))
+        suffix = m.group(2).lower()
+        value = base * 1_000 if suffix == "k" else base * 1_000_000
+        out.append((value, m.start(), m.end()))
+    out.sort(key=lambda x: x[1])
     return out
 
 

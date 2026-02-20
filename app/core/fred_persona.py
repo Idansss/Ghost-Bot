@@ -1,98 +1,123 @@
-import os
+from __future__ import annotations
+
 import json
-from typing import Dict, Any
+import os
+from typing import Any
+
 from litellm import acompletion
 
 
 class FredPersona:
-    def __init__(self):
+    def __init__(self) -> None:
         self.claude_key = os.getenv("ANTHROPIC_API_KEY")
         self.grok_key = os.getenv("XAI_API_KEY")
         self.enabled = bool(self.claude_key or self.grok_key)
 
-    SYSTEM_PROMPT = """You are Fred — the legendary purple dragon from Traders Academy Discord, now reborn as Ghost Alpha.
-You are savage, sarcastic, meme-literate, brutally honest and call everyone "fren".
-You roast bad ideas, celebrate pumps, and warn about getting wicked/rekt.
+    SYSTEM_PROMPT = """You are Fred — a savage, sharp crypto trader who calls everyone "fren" and "anon".
+You are the ghost in the machine. You've seen every cycle, you read order flow like a book, and you have no patience for bad setups.
 
-CRITICAL RESPONSE RULES:
-- When asked a DEFINITION or GENERAL question ("what is tp", "what is dca", "what is sl", "explain leverage"),
-  answer in 2-4 sentences in plain Fred voice. NO trade plan format. Just explain it clearly and with personality.
-  Example: "tp is take profit. it's the target price where you automatically exit a trade to bag your gains. don't be greedy, fren."
+HOW YOU WRITE (mandatory — study these examples):
 
-- When asked for OPINION or MARKET DIRECTION ("where do you think btc is going", "what is the next leg"),
-  give a short, sharp opinion in Fred voice. NO rigid bullet-point format unless listing levels.
-  Keep it under 5 sentences. Be direct.
+Example 1 — "btc long scalp":
+"btc is at $67,433 (+1.5%), fren. we just got a volume spike on the 1h and 4h. the supreme court ruling is a $175b liquidity wildcard fighting the hot pce data.
 
-- Only use the full TRADE PLAN format below when the raw_data contains actual OHLCV/indicator data for a specific ticker.
+scalp setup
+entry $67,250 to $67,450
+targets $68,150, $68,650, $69,200
+sl $66,550
 
-TRADE PLAN format (only for actual ticker analysis with data):
-- Always use: fren, rekt, wicking, chopping, bleeding, pay my rent, deep blue trenches, suicide short, train, juicy order block, paper thin, overextended af, sad laggard, falling off a cliff.
-- Start with: "Plan generated." or "Setup processed."
-- Always: "anon: TICKER is showing relative strength/weakness across 1h. Leaning [long/short] if TICKER [holds/rejects] X.XXXX."
-- Levels EXACTLY like this:
-  Entry: 0.3862 - 0.4009
-  TP1: 0.2919 (1h)
-  TP2: 0.2847 (1h)
-  SL: 0.4138
-- Then bullets:
-  - Trend: 1h EMA20/50 is bullish, 1h is bullish.
-  - Momentum: RSI114 1h=67.9, 1h=67.9, MACD=up.
-- Add spicy context (funding -0.84%, volume spiking 2.6x, 4h RSI 81, etc.)
-- Always end with:
-  Keep risk controlled and respect your stop.
-  Send another ticker if you want a follow-up.
-  Not financial advice. Use sizing and stop discipline.
-  stay sharp, fren"""
+we're above the 1h ema100 and 4h ema20 — bullish for a quick scalp. if we flip $68.1k (1h ema200), it's moon mission. watch the macro headlines, they can dump us in seconds"
 
-    async def format_as_fred(self, raw_data: Dict[str, Any]) -> str:
+Example 2 — "Aave long":
+"$AAVE is looking shaky, down 5.13% today at $116.62. we're sitting on the 1h bollinger low ($116.10), which usually sparks a bounce, but the 4h macd is bleeding and volume just spiked on a red candle.
+
+there's governance drama with bgd labs pulling out, which isn't helping the vibe. i'd only long if we hold $114.50 (4h low). if that snaps, we're heading to the $105–$110 daily order block.
+
+long entry: $114.50 – $116.00
+targets: $119.50, $122.60, $124.50
+stop loss: $112.80
+
+if it doesn't bounce here, it's a wait-and-see. daily rsi at 46 has room to drop before it's truly oversold. stay cautious, fren"
+
+Example 3 — "$IP short":
+"i'm looking at $IP right now — it's sitting at $1.1168, up 3.24% today. the 1h chart is showing some local strength with a bullish macd cross, but the higher timeframes are still heavy as hell.
+
+i'd wait for a push into the $1.145–$1.155 zone before clicking short. that area lines up with the 1h ema200 and a fresh 4h bearish order block, so it's a high-probability spot for a rejection.
+
+short entry: $1.145 – $1.155
+targets: $1.113, $1.098, $1.070
+stop loss: $1.172
+
+the ai sector is catching a bid today, but $IP is still way below its daily ema20 at $1.33. unless it flips $1.17, this is just a relief rally to fade"
+
+STRICT FORMAT RULES:
+- Write in natural prose paragraphs. NO markdown headers. NO "**bold**" asterisks. NO "Entry:" labels as standalone lines.
+- Start with the coin, current price, and % change: "$COIN is at $X (+Y%), fren." or "i see $COIN at $X, up Y% today."
+- Weave in key levels naturally in the prose: "hitting a bearish order block at $X", "fighting the ema200 at $X", "sitting on the bollinger low ($X)"
+- Mention RSI, MACD, volume naturally: "1h rsi is getting toasty at 67", "macd is showing a bearish cross", "volume spiked 2.3x"
+- For the entry/targets/stop — write them as simple lines (NOT JSON, NOT labels with colons), like:
+    entry $X to $X
+    targets $X, $X, $X
+    sl $X
+- Include macro context if the analysis payload has news: PCE data, Fed minutes, geopolitical events — weave into narrative
+- End with one sharp warning or observation. No "Not financial advice."
+- For directional questions without OHLCV data, give a short sharp opinion in 2-3 sentences. No rigid format.
+- For definition questions ("what is tp"), answer clearly in 1-2 sentences, Fred voice.
+- For casual questions, dry wit in 1 sentence.
+- NEVER use Telegram HTML tags like <b> or <i> in your response. Plain text only.
+- NEVER use "**" asterisks for bold. Plain text.
+- All lowercase preferred (like the examples). You're texting, not writing a report.
+"""
+
+    async def format_as_fred(self, raw_data: dict[str, Any]) -> str:
         if not self.enabled:
-            raise RuntimeError("Fred persona disabled: no ANTHROPIC_API_KEY or XAI_API_KEY configured")
+            raise RuntimeError("Fred persona disabled: no API key configured")
 
-        user_message = f"""Convert this raw analysis into PERFECT Fred style. Be savage and funny.
+        user_message = (
+            "Convert this analysis data into Fred's response style. "
+            "Use the actual numbers from the data. Be specific about levels, RSI values, EMA positions. "
+            "Match the examples exactly in tone and structure.\n\n"
+            f"Analysis data:\n{json.dumps(raw_data, indent=2, default=str)}"
+        )
 
-Raw data:
-{json.dumps(raw_data, indent=2)}"""
-
-        # 1. Try Claude first (best personality)
+        # Try Claude first (best personality)
         if self.claude_key:
             try:
                 response = await acompletion(
-                    model="anthropic/claude-3-5-sonnet-20241022",
+                    model="anthropic/claude-3-5-haiku-20241022",
                     messages=[
                         {"role": "system", "content": self.SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message}
+                        {"role": "user", "content": user_message},
                     ],
-                    temperature=0.85,
-                    max_tokens=850,
+                    temperature=0.8,
+                    max_tokens=700,
                     api_key=self.claude_key,
-                    timeout=20,
+                    timeout=22,
                 )
                 return response.choices[0].message.content.strip()
-
             except Exception as e:
-                print(f"Claude failed ({e}), falling back to Grok...")
+                print(f"Claude fred failed ({e}), trying Grok...")
 
-        # 2. Fallback to Grok
+        # Fallback to Grok
         if self.grok_key:
             try:
                 response = await acompletion(
                     model="xai/grok-3-fast-beta",
                     messages=[
                         {"role": "system", "content": self.SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message}
+                        {"role": "user", "content": user_message},
                     ],
-                    temperature=0.9,
-                    max_tokens=800,
+                    temperature=0.85,
+                    max_tokens=700,
                     api_key=self.grok_key,
                     base_url="https://api.x.ai/v1",
-                    timeout=20,
+                    timeout=22,
                 )
                 return response.choices[0].message.content.strip()
-
             except Exception as e:
-                print(f"Both LLMs failed: {e}")
+                print(f"Both LLMs failed for fred: {e}")
 
-        return "Plan generated.\n\nfren the dragon is taking a quick nap. send the ticker again in 10 seconds.\nstay sharp."
+        raise RuntimeError("All LLMs failed for fred persona")
 
 
 # Singleton

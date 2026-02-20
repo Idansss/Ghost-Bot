@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 
+def safe_html(text: str) -> str:
+    """Escape special HTML characters so dynamic content is safe in HTML parse_mode."""
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def fmt_price(v: float) -> str:
     """Human-readable price for summary text: $68.1k, $1.23M, $142.3"""
     if v >= 1_000_000:

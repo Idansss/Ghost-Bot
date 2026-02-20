@@ -175,7 +175,7 @@ class MarketAnalysisService:
         if news_task is not None:
             task_list.append(news_task)
         task_list.extend(candle_tasks)
-        gathered = await asyncio.gather(*task_list, return_exceptions=False)
+        gathered = await asyncio.gather(*task_list, return_exceptions=True)
 
         idx = 0
         price = gathered[idx]

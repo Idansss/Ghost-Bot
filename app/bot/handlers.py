@@ -57,6 +57,7 @@ from app.bot.templates import (
 from app.core.config import get_settings
 from app.core.container import ServiceHub
 from app.core.fred_persona import fred
+from app.services.market_context import format_market_context
 from app.core.nlu import COMMON_WORDS_NOT_TICKERS, Intent, is_likely_english_phrase, parse_message, parse_timestamp
 from app.db.models import TradeCheck
 from app.db.session import AsyncSessionLocal
@@ -120,9 +121,17 @@ FOLLOWUP_RE = re.compile(
 FOLLOWUP_VALUE_RE = re.compile(r"\b[0-9]+(?:\.[0-9]+)?\b")
 
 
+_CHAT_LOCKS_MAX = 2000
+
+
 def _chat_lock(chat_id: int) -> asyncio.Lock:
     lock = _CHAT_LOCKS.get(chat_id)
     if lock is None:
+        # Prune idle locks when dict grows too large to prevent unbounded memory growth
+        if len(_CHAT_LOCKS) >= _CHAT_LOCKS_MAX:
+            idle = [k for k, v in list(_CHAT_LOCKS.items()) if not v.locked()]
+            for k in idle[:len(idle) // 2 + 1]:
+                _CHAT_LOCKS.pop(k, None)
         lock = asyncio.Lock()
         _CHAT_LOCKS[chat_id] = lock
     return lock
@@ -398,23 +407,23 @@ async def _llm_analysis_reply(
         return None
 
     market_context_text = str(payload.get("market_context_text") or "").strip()
+    direction_label = (direction or payload.get("side") or "").strip().lower() or "none"
     prompt = (
-        f"Build a market reply for {symbol.upper()}.\n"
-        f"User direction bias: {(direction or payload.get('side') or 'none')}.\n"
-        f"Analysis payload JSON: {json.dumps(payload, ensure_ascii=True, default=str)}\n\n"
-        f"Current market context: {market_context_text}\n"
-        "Use this to color your analysis — mention BTC or broader conditions if relevant to the coin's setup.\n"
-        "Write like a trader texting. Keep it tight. No template headings.\n"
-        "Bullets for entry/target/stop are allowed and preferred for clear setups.\n"
-        "End with one sharp line."
+        f"Analysis data for {symbol.upper()} ({direction_label} bias):\n"
+        f"{json.dumps(payload, ensure_ascii=True, default=str)}\n\n"
+        f"BTC/market backdrop: {market_context_text or 'not available'}\n\n"
+        "Write this as Fred would — start with current price and % change, weave in key levels "
+        "(EMA200, order blocks, bollinger bands, RSI) naturally in prose, mention macro if relevant, "
+        "then give entry range / 3 targets / stop as simple plain lines. "
+        "End with one sharp observation. All lowercase, casual trader voice. No HTML tags."
     )
     history = await _get_chat_history(chat_id) if chat_id is not None else []
     try:
         reply = await hub.llm_client.reply(
             prompt,
             history=history,
-            max_output_tokens=min(max(int(_settings.openai_max_output_tokens), 260), 460),
-            temperature=max(0.4, float(_settings.openai_temperature)),
+            max_output_tokens=min(max(int(_settings.openai_max_output_tokens), 400), 700),
+            temperature=max(0.6, float(_settings.openai_temperature)),
         )
     except Exception:  # noqa: BLE001
         return None
@@ -608,6 +617,98 @@ async def _llm_fallback_reply(user_text: str, settings: dict | None = None, chat
     return final
 
 
+_MARKET_QUESTION_RE = re.compile(
+    r"\b(pump|dump|moon|rug|rekt|bleed|crash|rally|bull|bear|market|btc|bitcoin|eth|ethereum|"
+    r"crypto|price|move|movement|run|drop|dip|bounce|trend|happening|why|explain|think|feel|"
+    r"going|direction|outlook|setup|narrative|sentiment|vibe|catalys|news|macro|tariff|"
+    r"inflation|rate|fed|fomc|cpi|pce|blackrock|etf|liquidat|funding|dominan)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_market_question(text: str) -> bool:
+    words = re.findall(r"\w+", text.lower())
+    if len(words) < 2:
+        return False
+    return bool(_MARKET_QUESTION_RE.search(text))
+
+
+async def _llm_market_chat_reply(
+    user_text: str,
+    settings: dict | None = None,
+    chat_id: int | None = None,
+) -> str | None:
+    """Answer open-ended market questions by injecting live price + news context."""
+    hub = _require_hub()
+    if not hub.llm_client:
+        return None
+
+    cleaned = (user_text or "").strip()
+    if not cleaned:
+        return None
+
+    style = "wild"
+    if settings:
+        style = "formal" if settings.get("formal_mode") else str(settings.get("tone_mode", "wild")).lower()
+
+    # Fetch live market snapshot + recent headlines in parallel
+    mkt_ctx: dict = {}
+    news_headlines: list[dict] = []
+    try:
+        mkt_ctx, news_payload = await asyncio.gather(
+            hub.analysis_service.get_market_context(),
+            hub.news_service.get_digest(mode="crypto", limit=6),
+            return_exceptions=True,
+        )
+        if isinstance(mkt_ctx, Exception):
+            mkt_ctx = {}
+        if isinstance(news_payload, Exception):
+            news_payload = {}
+        if isinstance(news_payload, dict):
+            news_headlines = news_payload.get("headlines") or []
+    except Exception:  # noqa: BLE001
+        pass
+
+    mkt_text = format_market_context(mkt_ctx) if mkt_ctx else ""
+    news_lines = "\n".join(
+        f"- {h.get('title', '')} ({h.get('source', '')})"
+        for h in news_headlines[:6]
+        if h.get("title")
+    )
+
+    context_block = ""
+    if mkt_text:
+        context_block += f"Live market snapshot: {mkt_text}\n"
+    if news_lines:
+        context_block += f"Recent crypto news:\n{news_lines}\n"
+
+    prompt = (
+        f"{context_block}"
+        f"User style preference: {style}\n"
+        f"User question: {cleaned}\n\n"
+        "Using the live data above, answer like a sharp, well-informed trader who connects "
+        "the dots between news events and price action. Be direct and specific — name the "
+        "catalysts, give a clear read on the market. No disclaimers. End with one sharp line."
+    )
+
+    history = await _get_chat_history(chat_id) if chat_id is not None else []
+    try:
+        reply = await hub.llm_client.reply(
+            prompt,
+            history=history,
+            max_output_tokens=min(max(int(_settings.openai_max_output_tokens), 300), 500),
+            temperature=max(0.5, float(_settings.openai_temperature)),
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+    final = reply.strip() if reply and reply.strip() else None
+    if final and chat_id is not None:
+        await _append_chat_history(chat_id, "user", cleaned)
+        await _append_chat_history(chat_id, "assistant", final)
+    return final
+
+
 def _parse_duration_to_seconds(raw: str) -> int | None:
     m = re.match(r"^\s*(\d+)\s*([smhd])\s*$", raw.lower())
     if not m:
@@ -781,12 +882,31 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
         return False
 
     if intent == "smalltalk":
-        llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
+        with suppress(Exception):
+            await message.bot.send_chat_action(chat_id, ChatAction.TYPING)
+        if _looks_like_market_question(raw_text):
+            llm_reply = await _llm_market_chat_reply(raw_text, settings, chat_id=chat_id)
+        else:
+            llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
         await message.answer(llm_reply or smalltalk_reply(settings))
         return True
 
+    if intent == "market_chat":
+        with suppress(Exception):
+            await message.bot.send_chat_action(chat_id, ChatAction.TYPING)
+        llm_reply = await _llm_market_chat_reply(raw_text, settings, chat_id=chat_id)
+        if llm_reply:
+            await message.answer(llm_reply)
+            return True
+        return False
+
     if intent == "general_chat":
-        llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
+        with suppress(Exception):
+            await message.bot.send_chat_action(chat_id, ChatAction.TYPING)
+        if _looks_like_market_question(raw_text):
+            llm_reply = await _llm_market_chat_reply(raw_text, settings, chat_id=chat_id)
+        else:
+            llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
         if llm_reply:
             await message.answer(llm_reply)
             return True
@@ -965,8 +1085,19 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
     if intent == "alert_create":
         symbol = _extract_symbol(params)
         price = _as_float(params.get("price") or params.get("target_price"))
+
+        # Fallback: parse symbol/price directly from the raw text if router missed them
         if not symbol or price is None:
-            await message.answer("Give me symbol and price, e.g. `alert SOL above 100`.")
+            from app.core.nlu import _extract_symbols, _extract_prices
+            if not symbol:
+                syms = _extract_symbols(raw_text)
+                symbol = syms[0] if syms else None
+            if price is None:
+                pxs = _extract_prices(raw_text)
+                price = pxs[0] if pxs else None
+
+        if not symbol or price is None:
+            await message.answer("Need symbol and price — e.g. <code>alert BTC 66k</code> or <code>set alert for SOL 200</code>.")
             return True
         op = str(params.get("operator") or params.get("condition") or "cross").strip().lower()
         if op in {">", ">=", "above", "gt", "gte"}:
@@ -985,9 +1116,8 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
             context="alert",
         )
         await message.answer(
-            f"Alert created: #{alert.id}\n"
-            f"Condition: {alert.symbol} {alert.condition} {alert.target_price}\n"
-            "I trigger once and avoid spam."
+            f"alert set for <b>{alert.symbol}</b> at <b>{alert.target_price}</b>. "
+            "i'll ping you when we hit it. don't get liquidated"
         )
         return True
 
@@ -996,10 +1126,9 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
         if not alerts:
             await message.answer("No active alerts.")
         else:
-            lines = [
-                (f"#{a.id} {a.symbol} {a.condition} {a.target_price} [{a.status}]").strip()
-                for a in alerts
-            ]
+            lines = ["<b>Active Alerts</b>", ""]
+            for a in alerts:
+                lines.append(f"<code>#{a.id}</code>  <b>{a.symbol}</b>  {a.condition}  {a.target_price}  <i>[{a.status}]</i>")
             first = alerts[0]
             await _remember_source_context(
                 chat_id,
@@ -1009,7 +1138,7 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
                 symbol=first.symbol,
                 context="alerts list",
             )
-            await message.answer("Active alerts:\n" + "\n".join(lines))
+            await message.answer("\n".join(lines))
         return True
 
     if intent == "alert_delete":
@@ -1462,9 +1591,8 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
             context="alert",
         )
         await message.answer(
-            f"Alert created: #{alert.id}\n"
-            f"Condition: {alert.symbol} {alert.condition} {alert.target_price}\n"
-            "I trigger once and avoid spam."
+            f"alert set for <b>{alert.symbol}</b> at <b>{alert.target_price}</b>. "
+            "i'll ping you when we hit it. don't get liquidated"
         )
         return True
 
@@ -1473,10 +1601,9 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         if not alerts:
             await message.answer("No active alerts.")
         else:
-            lines = [
-                (f"#{a.id} {a.symbol} {a.condition} {a.target_price} [{a.status}]").strip()
-                for a in alerts
-            ]
+            lines = ["<b>Active Alerts</b>", ""]
+            for a in alerts:
+                lines.append(f"<code>#{a.id}</code>  <b>{a.symbol}</b>  {a.condition}  {a.target_price}  <i>[{a.status}]</i>")
             first = alerts[0]
             await _remember_source_context(
                 chat_id,
@@ -1486,7 +1613,7 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
                 symbol=first.symbol,
                 context="alerts list",
             )
-            await message.answer("Active alerts:\n" + "\n".join(lines))
+            await message.answer("\n".join(lines))
         return True
 
     if parsed.intent == Intent.ALERT_CLEAR:
@@ -1675,8 +1802,17 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
 async def start_cmd(message: Message) -> None:
     hub = _require_hub()
     await hub.user_service.ensure_user(message.chat.id)
+    name = message.from_user.first_name if message.from_user else "fren"
     await message.answer(
-        "Market bot online. Send plain text like 'SOL long', 'Coins to watch 5', or 'ping me when BTC hits 70000'."
+        f"gm <b>{name}</b> 👋\n\n"
+        "i'm <b>fred</b> — your on-chain trading assistant. i live in the market 24/7 so you don't have to.\n\n"
+        "try something like:\n"
+        "· <code>BTC 4h</code> — full technical analysis\n"
+        "· <code>ping me when ETH hits 2000</code> — price alert\n"
+        "· <code>coins to watch</code> — top movers watchlist\n"
+        "· <code>why is BTC pumping</code> — live market read\n\n"
+        "<i>or tap a button below to get started.</i>",
+        reply_markup=smart_action_menu(),
     )
 
 
@@ -1689,21 +1825,21 @@ async def help_cmd(message: Message) -> None:
 async def admins_cmd(message: Message) -> None:
     admin_ids = sorted(set(_settings.admin_ids_list()))
     if not admin_ids:
-        await message.answer("No admin IDs configured.")
+        await message.answer("no admin IDs configured.")
         return
-    lines = ["Bot admins:"]
-    lines.extend(f"- {admin_id}" for admin_id in admin_ids)
+    lines = ["<b>bot admins</b>\n"]
+    lines.extend(f"· <code>{admin_id}</code>" for admin_id in admin_ids)
     await message.answer("\n".join(lines))
 
 
 @router.message(Command("id"))
 async def id_cmd(message: Message) -> None:
     if not message.from_user:
-        await message.answer("Could not read your user id from this update.")
+        await message.answer("couldn't read your user id from this update.")
         return
     await message.answer(
-        f"Your user id: {message.from_user.id}\n"
-        f"Current chat id: {message.chat.id}"
+        f"your user id  <code>{message.from_user.id}</code>\n"
+        f"this chat id  <code>{message.chat.id}</code>"
     )
 
 
@@ -1905,10 +2041,9 @@ async def alert_cmd(message: Message) -> None:
         if not alerts:
             await message.answer("No active alerts.")
             return
-        rows = [
-            (f"#{a.id} {a.symbol} {a.condition} {a.target_price} [{a.status}]").strip()
-            for a in alerts
-        ]
+        rows = ["<b>Active Alerts</b>", ""]
+        for a in alerts:
+            rows.append(f"<code>#{a.id}</code>  <b>{a.symbol}</b>  {a.condition}  {a.target_price}  <i>[{a.status}]</i>")
         first = alerts[0]
         await _remember_source_context(
             message.chat.id,
@@ -1918,7 +2053,7 @@ async def alert_cmd(message: Message) -> None:
             symbol=first.symbol,
             context="alerts list",
         )
-        await message.answer("Active alerts:\n" + "\n".join(rows))
+        await message.answer("\n".join(rows))
         return
 
     if text.startswith("/alert clear"):
@@ -1955,8 +2090,8 @@ async def alert_cmd(message: Message) -> None:
             context="alert",
         )
         await message.answer(
-            f"Alert created: #{alert.id}\nCondition: {symbol} {condition} {price}\n"
-            "I will trigger once on crossing and avoid spam."
+            f"alert set for <b>{symbol}</b> at <b>{price}</b>. "
+            "i'll ping you when we hit it. don't get liquidated"
         )
         return
 
@@ -1979,8 +2114,8 @@ async def alert_cmd(message: Message) -> None:
             context="alert",
         )
         await message.answer(
-            f"Alert created: #{alert.id}\nCondition: {symbol} {condition} {price}\n"
-            "I will trigger once on crossing and avoid spam."
+            f"alert set for <b>{symbol}</b> at <b>{price}</b>. "
+            "i'll ping you when we hit it. don't get liquidated"
         )
         return
 
@@ -1999,10 +2134,9 @@ async def alerts_cmd(message: Message) -> None:
     if not alerts:
         await message.answer("No active alerts.")
         return
-    rows = [
-        (f"#{a.id} {a.symbol} {a.condition} {a.target_price} [{a.status}]").strip()
-        for a in alerts
-    ]
+    rows = ["<b>Active Alerts</b>", ""]
+    for a in alerts:
+        rows.append(f"<code>#{a.id}</code>  <b>{a.symbol}</b>  {a.condition}  {a.target_price}  <i>[{a.status}]</i>")
     first = alerts[0]
     await _remember_source_context(
         message.chat.id,
@@ -2012,7 +2146,7 @@ async def alerts_cmd(message: Message) -> None:
         symbol=first.symbol,
         context="alerts list",
     )
-    await message.answer("Active alerts:\n" + "\n".join(rows))
+    await message.answer("\n".join(rows))
 
 
 @router.message(Command("alertdel"))
@@ -2424,9 +2558,16 @@ async def giveaway_menu_callback(callback: CallbackQuery) -> None:
             try:
                 payload = await hub.giveaway_service.join_active(chat_id, user_id)
             except Exception as exc:  # noqa: BLE001
-                await callback.message.answer(str(exc))
+                await callback.message.answer(f"couldn't join: {exc}")
                 return
-            await callback.message.answer(f"Joined giveaway #{payload['giveaway_id']}. Participants: {payload['participants']}")
+            gw_id = payload.get("giveaway_id", "?")
+            participants = payload.get("participants", "?")
+            await callback.message.answer(
+                f"you're in 🎉\n\n"
+                f"giveaway <b>#{gw_id}</b>\n"
+                f"participants so far: <b>{participants}</b>\n\n"
+                f"<i>good luck, fren.</i>"
+            )
 
         await _run_and_answer(_runner)
         return
@@ -2446,14 +2587,17 @@ async def giveaway_menu_callback(callback: CallbackQuery) -> None:
             try:
                 payload = await hub.giveaway_service.end_giveaway(chat_id, user_id)
             except Exception as exc:  # noqa: BLE001
-                await callback.message.answer(str(exc))
+                await callback.message.answer(f"couldn't end giveaway: {exc}")
                 return
             if payload.get("winner_user_id"):
                 await callback.message.answer(
-                    f"Giveaway #{payload['giveaway_id']} ended.\nWinner: {payload['winner_user_id']}\nPrize: {payload['prize']}"
+                    f"🏆 giveaway <b>#{payload.get('giveaway_id')}</b> closed.\n\n"
+                    f"winner: <code>{payload.get('winner_user_id')}</code>\n"
+                    f"prize: <b>{payload.get('prize', '—')}</b>"
                 )
             else:
-                await callback.message.answer(f"Giveaway ended with no winner. {payload.get('note')}")
+                note = payload.get("note") or "no participants"
+                await callback.message.answer(f"giveaway ended with no winner. {note}")
 
         await _run_and_answer(_runner)
         return
@@ -2466,11 +2610,12 @@ async def giveaway_menu_callback(callback: CallbackQuery) -> None:
             try:
                 payload = await hub.giveaway_service.reroll(chat_id, user_id)
             except Exception as exc:  # noqa: BLE001
-                await callback.message.answer(str(exc))
+                await callback.message.answer(f"reroll failed: {exc}")
                 return
             await callback.message.answer(
-                f"Reroll complete for giveaway #{payload['giveaway_id']}.\n"
-                f"New winner: {payload['winner_user_id']} (prev: {payload.get('previous_winner_user_id')})"
+                f"🔄 reroll done for giveaway <b>#{payload.get('giveaway_id')}</b>\n\n"
+                f"new winner: <code>{payload.get('winner_user_id')}</code>\n"
+                f"prev winner: <code>{payload.get('previous_winner_user_id', '—')}</code>"
             )
 
         await _run_and_answer(_runner)
@@ -2516,7 +2661,10 @@ async def set_alert_callback(callback: CallbackQuery) -> None:
 
     symbol = (callback.data or "").split(":", 1)[1]
     await _set_pending_alert(callback.message.chat.id, symbol)
-    await callback.message.answer(f"Send alert level for {symbol}, e.g. {symbol} 100")
+    await callback.message.answer(
+        f"send me the target price for <b>{symbol}</b>.\n"
+        f"e.g. <code>{symbol} 100</code> or <code>alert {symbol} 100 above</code>"
+    )
     await callback.answer()
 
 
@@ -2531,10 +2679,18 @@ async def show_levels_callback(callback: CallbackQuery) -> None:
     symbol = (callback.data or "").split(":", 1)[1]
     payload = await hub.cache.get_json(f"last_analysis:{callback.message.chat.id}:{symbol}")
     if not payload:
-        await callback.answer("No cached levels. Refresh first.", show_alert=True)
+        await callback.answer("No cached levels — run a fresh analysis first.", show_alert=True)
         return
+    entry = payload.get("entry", "—")
+    tp1 = payload.get("tp1", "—")
+    tp2 = payload.get("tp2", "—")
+    sl = payload.get("sl", "—")
     await callback.message.answer(
-        f"{symbol} levels\nEntry: {payload['entry']}\nTP1: {payload['tp1']}\nTP2: {payload['tp2']}\nSL: {payload['sl']}"
+        f"<b>{symbol}</b> key levels\n\n"
+        f"entry    <code>{entry}</code>\n"
+        f"target 1  <code>{tp1}</code>\n"
+        f"target 2  <code>{tp2}</code>\n"
+        f"stop      <code>{sl}</code>"
     )
     await callback.answer()
 
@@ -2550,10 +2706,16 @@ async def why_callback(callback: CallbackQuery) -> None:
     symbol = (callback.data or "").split(":", 1)[1]
     payload = await hub.cache.get_json(f"last_analysis:{callback.message.chat.id}:{symbol}")
     if not payload:
-        await callback.answer("No context saved.", show_alert=True)
+        await callback.answer("No context saved — run a fresh analysis first.", show_alert=True)
         return
-    lines = [f"Why {symbol}:"] + [f"- {w}" for w in payload.get("why", [])]
-    await callback.message.answer("\n".join(lines))
+    bullets = payload.get("why", [])
+    if bullets:
+        bullet_lines = "\n".join(f"· {w}" for w in bullets)
+        text = f"<b>why {symbol}</b>\n\n{bullet_lines}"
+    else:
+        summary = payload.get("summary", "")
+        text = f"<b>why {symbol}</b>\n\n{summary or 'no reasoning available for this setup.'}"
+    await callback.message.answer(text)
     await callback.answer()
 
 
@@ -2663,8 +2825,16 @@ async def derivatives_callback(callback: CallbackQuery) -> None:
             symbol=symbol,
             context="derivatives",
         )
+        funding = payload.get("funding_rate")
+        oi = payload.get("open_interest")
+        source = payload.get("source") or payload.get("source_line") or "live"
+        funding_str = f"{float(funding)*100:.4f}%" if funding is not None else "n/a"
+        oi_str = f"${float(oi)/1_000_000:.2f}B" if oi is not None else "n/a"
         await callback.message.answer(
-            f"{symbol} derivatives\nFunding: {payload.get('funding_rate')}\nOpen interest: {payload.get('open_interest')}"
+            f"<b>{symbol}</b> derivatives\n\n"
+            f"funding rate  <code>{funding_str}</code>\n"
+            f"open interest <code>{oi_str}</code>\n\n"
+            f"<i>source: {source}</i>"
         )
         await callback.answer()
 
@@ -2685,14 +2855,22 @@ async def catalysts_callback(callback: CallbackQuery) -> None:
         symbol = (callback.data or "").split(":", 1)[1]
         headlines = await hub.news_service.get_asset_headlines(symbol, limit=3)
         if not headlines:
-            await callback.message.answer(f"No fresh catalysts found for {symbol} right now.")
+            await callback.message.answer(f"no fresh catalysts for <b>{symbol}</b> right now. check back later.")
             await callback.answer()
             return
-        lines = [f"{symbol} catalysts:"]
+        lines = [f"<b>{symbol} catalysts</b>\n"]
         for item in headlines[:3]:
-            lines.append(f"- {item['title']}")
-            lines.append(f"  {item['url']}")
-        await callback.message.answer("\n".join(lines))
+            title = item.get("title", "")
+            url = item.get("url", "")
+            source = item.get("source", "")
+            if url:
+                lines.append(f'· <a href="{url}">{title}</a>')
+            else:
+                lines.append(f"· {title}")
+            if source:
+                lines.append(f"  <i>{source}</i>")
+            lines.append("")
+        await callback.message.answer("\n".join(lines).strip(), disable_web_page_preview=True)
         await callback.answer()
 
     await _run_with_typing_lock(callback.bot, chat_id, _run)
@@ -2707,7 +2885,9 @@ async def backtest_callback(callback: CallbackQuery) -> None:
 
     symbol = (callback.data or "").split(":", 1)[1]
     await callback.message.answer(
-        f"Send trade details like: check this trade from yesterday: {symbol} entry 2100 stop 2060 targets 2140 2180 timeframe 1h"
+        f"drop your <b>{symbol}</b> trade details and i'll check it.\n\n"
+        f"format: <code>{symbol} entry 2100 stop 2060 targets 2140 2180 2220 timeframe 1h</code>\n\n"
+        "<i>or just paste it in natural language — i'll figure it out.</i>"
     )
     await callback.answer()
 
@@ -3209,7 +3389,8 @@ async def route_text(message: Message) -> None:
                         context="alert",
                     )
                     await message.answer(
-                        f"Alert created: #{alert.id} {pending_alert_symbol} cross {target}"
+                        f"alert set for <b>{pending_alert_symbol}</b> at <b>{target}</b>. "
+                        "i'll ping you when we hit it. don't get liquidated"
                     )
                     return
 
@@ -3255,7 +3436,10 @@ async def route_text(message: Message) -> None:
             chat_mode = _openai_chat_mode()
 
             if hub.llm_client and chat_mode == "chat_only":
-                llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
+                if _looks_like_market_question(text):
+                    llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
+                else:
+                    llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
                     await message.answer(llm_reply)
                     return
@@ -3270,7 +3454,10 @@ async def route_text(message: Message) -> None:
                             return
                     except Exception:  # noqa: BLE001
                         pass
-                llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
+                if _looks_like_market_question(text):
+                    llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
+                else:
+                    llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
                     await message.answer(llm_reply)
                     return
@@ -3286,7 +3473,10 @@ async def route_text(message: Message) -> None:
 
             if parsed.requires_followup:
                 if parsed.intent == Intent.UNKNOWN:
-                    llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
+                    if _looks_like_market_question(text):
+                        llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
+                    else:
+                        llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
                     if llm_reply:
                         await message.answer(llm_reply)
                         return
@@ -3318,7 +3508,10 @@ async def route_text(message: Message) -> None:
             try:
                 if await _handle_parsed_intent(message, parsed, settings):
                     return
-                llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
+                if _looks_like_market_question(text):
+                    llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
+                else:
+                    llm_reply = await _llm_fallback_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
                     await message.answer(llm_reply)
                     return

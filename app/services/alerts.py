@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, select
@@ -9,6 +11,8 @@ from app.adapters.market_router import MarketDataRouter
 from app.adapters.prices import PriceAdapter
 from app.core.cache import RedisCache
 from app.db.models import Alert, User
+
+logger = logging.getLogger(__name__)
 
 
 class AlertsService:
@@ -34,7 +38,7 @@ class AlertsService:
         q = await session.execute(select(User).where(User.telegram_chat_id == chat_id))
         user = q.scalar_one_or_none()
         if user:
-            user.last_seen_at = datetime.utcnow()
+            user.last_seen_at = datetime.now(timezone.utc)
             return user
         user = User(telegram_chat_id=chat_id, settings_json={})
         session.add(user)
@@ -168,18 +172,30 @@ class AlertsService:
             if not alerts:
                 return 0
 
-            symbol_prices: dict[str, float] = {}
-            symbol_source: dict[str, dict] = {}
+            # Deduplicate price keys and fetch all in parallel
+            unique_keys: dict[str, Alert] = {}
             for alert in alerts:
                 key = f"{alert.symbol}:{alert.source_exchange}:{alert.instrument_id}:{alert.market_kind}"
-                if key not in symbol_prices:
-                    price_value, source_info = await self._get_alert_price(alert)
-                    if price_value is None:
-                        continue
+                if key not in unique_keys:
+                    unique_keys[key] = alert
+
+            fetch_results = await asyncio.gather(
+                *[self._get_alert_price(a) for a in unique_keys.values()],
+                return_exceptions=True,
+            )
+
+            symbol_prices: dict[str, float] = {}
+            symbol_source: dict[str, dict] = {}
+            for key, result in zip(unique_keys.keys(), fetch_results):
+                if isinstance(result, Exception) or result is None:
+                    logger.warning("price_fetch_failed", extra={"key": key, "error": str(result)})
+                    continue
+                price_value, source_info = result
+                if price_value is not None:
                     symbol_prices[key] = float(price_value)
                     symbol_source[key] = source_info
 
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             for alert in alerts:
                 key = f"{alert.symbol}:{alert.source_exchange}:{alert.instrument_id}:{alert.market_kind}"
                 if key not in symbol_prices:
@@ -191,11 +207,12 @@ class AlertsService:
                     f"{alert.source_exchange or 'auto'}:{alert.instrument_id or 'na'}:{alert.market_kind or 'spot'}"
                 )
                 prev_payload = await self.cache.get_json(prev_key)
-                prev_price = float(prev_payload["price"]) if prev_payload else current_price
+                prev_price = float(prev_payload.get("price", current_price)) if prev_payload else current_price
 
                 await self.cache.set_json(prev_key, {"price": current_price}, ttl=7200)
 
-                if alert.cooldown_until and alert.cooldown_until > now:
+                now_naive = now.replace(tzinfo=None)
+                if alert.cooldown_until and alert.cooldown_until > now_naive:
                     continue
 
                 if not self._condition_met(alert.condition, alert.target_price, prev_price, current_price):
@@ -206,8 +223,8 @@ class AlertsService:
                     continue
 
                 alert.status = "triggered"
-                alert.triggered_at = now
-                alert.cooldown_until = now + timedelta(minutes=self.cooldown_minutes)
+                alert.triggered_at = now_naive
+                alert.cooldown_until = now_naive + timedelta(minutes=self.cooldown_minutes)
                 alert.last_triggered_price = current_price
                 src = symbol_source.get(key, {})
                 if src.get("exchange"):
@@ -221,13 +238,15 @@ class AlertsService:
                 user_q = await session.execute(select(User).where(User.id == alert.user_id))
                 user = user_q.scalar_one_or_none()
                 if user:
-                    await notifier(
-                        user.telegram_chat_id,
-                        (
-                            f"Alert #{alert.id} hit: {alert.symbol} {alert.condition} {alert.target_price:.4f}\n"
-                            f"Now: {current_price:.4f} (source: {alert.source_exchange or 'live'} {alert.market_kind or ''})"
-                        ),
+                    direction_word = "above" if alert.condition == "above" else "below"
+                    msg = (
+                        f"🔔 <b>{alert.symbol}</b> just crossed <b>${alert.target_price:,.2f}</b> {direction_word}, fren.\n"
+                        f"trading at <b>${current_price:,.2f}</b> right now. you set this one — go check the chart."
                     )
+                    try:
+                        await notifier(user.telegram_chat_id, msg)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("alert_notify_failed", extra={"chat_id": user.telegram_chat_id, "error": str(exc)})
 
             await session.commit()
 

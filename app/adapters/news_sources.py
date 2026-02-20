@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Iterable
 
-import feedparser
-
 from app.core.cache import RedisCache
 from app.core.http import ResilientHTTPClient
+
+_ATOM_NS = "http://www.w3.org/2005/Atom"
+_RSS_AGENT = {"User-Agent": "Mozilla/5.0 (compatible; GhostBot/1.0; +https://ghost-bot-ashen.vercel.app)"}
 
 
 class NewsSourcesAdapter:
@@ -26,26 +28,66 @@ class NewsSourcesAdapter:
         self.cryptopanic_key = cryptopanic_key
         self.openai_rss_feeds = openai_rss_feeds or []
 
+    def _parse_dt(self, raw: str) -> datetime | None:
+        """Parse RFC-2822 (RSS) or ISO-8601 (Atom) date strings."""
+        if not raw:
+            return None
+        try:
+            return parsedate_to_datetime(raw).astimezone(timezone.utc)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except Exception:  # noqa: BLE001
+            return None
+
     async def _fetch_rss_feed(self, url: str) -> list[dict]:
-        parsed = await asyncio.to_thread(feedparser.parse, url)
+        try:
+            raw = await self.http.get_text(url, headers=_RSS_AGENT)
+            root = ET.fromstring(raw)
+        except Exception:  # noqa: BLE001
+            return []
+
         items: list[dict] = []
-        for entry in parsed.entries[:12]:
-            published = entry.get("published") or entry.get("updated")
-            dt = None
-            if published:
-                try:
-                    dt = parsedate_to_datetime(published).astimezone(timezone.utc)
-                except Exception:  # noqa: BLE001
-                    dt = None
-            items.append(
-                {
-                    "title": entry.get("title", "Untitled"),
-                    "url": entry.get("link", ""),
-                    "summary": entry.get("summary", "") or entry.get("description", ""),
-                    "source": parsed.feed.get("title", "rss"),
-                    "published_at": (dt or datetime.now(timezone.utc)).isoformat(),
-                }
-            )
+
+        channel = root.find("channel")
+        if channel is not None:
+            feed_title = (channel.findtext("title") or "rss").strip()
+            for entry in list(channel.findall("item"))[:12]:
+                published = entry.findtext("pubDate") or entry.findtext("date") or ""
+                items.append(
+                    {
+                        "title": (entry.findtext("title") or "Untitled").strip(),
+                        "url": (entry.findtext("link") or "").strip(),
+                        "summary": (entry.findtext("description") or "").strip(),
+                        "source": feed_title,
+                        "published_at": (self._parse_dt(published) or datetime.now(timezone.utc)).isoformat(),
+                    }
+                )
+        else:
+            feed_title = (root.findtext(f"{{{_ATOM_NS}}}title") or "rss").strip()
+            for entry in list(root.findall(f"{{{_ATOM_NS}}}entry"))[:12]:
+                published = (
+                    entry.findtext(f"{{{_ATOM_NS}}}published")
+                    or entry.findtext(f"{{{_ATOM_NS}}}updated")
+                    or ""
+                )
+                link_el = entry.find(f"{{{_ATOM_NS}}}link")
+                link = (link_el.get("href") or "") if link_el is not None else ""
+                items.append(
+                    {
+                        "title": (entry.findtext(f"{{{_ATOM_NS}}}title") or "Untitled").strip(),
+                        "url": link.strip(),
+                        "summary": (
+                            entry.findtext(f"{{{_ATOM_NS}}}summary")
+                            or entry.findtext(f"{{{_ATOM_NS}}}content")
+                            or ""
+                        ).strip(),
+                        "source": feed_title,
+                        "published_at": (self._parse_dt(published) or datetime.now(timezone.utc)).isoformat(),
+                    }
+                )
+
         return items
 
     async def _fetch_cryptopanic(self, limit: int = 20) -> list[dict]:

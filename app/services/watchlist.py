@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from app.adapters.market_router import MarketDataRouter
 from app.adapters.news_sources import NewsSourcesAdapter
@@ -121,5 +121,5 @@ class WatchlistService:
             "items": items,
             "direction": direction,
             "source_line": "Data source: multi-exchange spot router | Updated: just now",
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
