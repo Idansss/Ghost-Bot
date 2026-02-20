@@ -1881,7 +1881,7 @@ async def price_cmd(message: Message) -> None:
     args = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
     text = args.strip()
     if not text:
-        await message.answer("Usage: /price <symbol> [tf]\nExample: /price SOL 1h")
+        await message.answer("send symbol to get price.\nexample: <code>/price SOL</code> or <code>/price BTC 1h</code>")
         return
     await _dispatch_command_text(message, f"watch {text}")
 
@@ -2444,7 +2444,13 @@ async def command_menu_callback(callback: CallbackQuery) -> None:
     if action == "alert":
         if len(parts) >= 3 and parts[2] == "create":
             await _cmd_wizard_set(chat_id, {"step": "dispatch_text", "prefix": "alert "})
-            await callback.message.answer("Send: `<symbol> <price> [above|below|cross]`, e.g. `SOL 100 above`.")
+            await callback.message.answer(
+                "send me the alert details:\n\n"
+                "<code>SOL 100 above</code>\n"
+                "<code>BTC 66000 below</code>\n"
+                "<code>ETH 3200</code>  ← defaults to cross\n\n"
+                "<i>format: symbol  price  [above | below | cross]</i>"
+            )
             await callback.answer()
             return
         if len(parts) >= 3 and parts[2] == "list":
