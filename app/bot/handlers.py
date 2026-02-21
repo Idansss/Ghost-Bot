@@ -134,6 +134,75 @@ def _safe_exc(exc: Exception) -> str:
     )
 
 
+# Valid Telegram HTML tags (self-closing not needed)
+_TELEGRAM_ALLOWED_TAGS = {"b", "i", "u", "s", "code", "pre", "a", "blockquote", "tg-spoiler"}
+_HTML_TAG_RE = re.compile(r"<(/?)(\w[\w\-]*)(\s[^>]*)?>", re.IGNORECASE)
+
+
+def _sanitize_llm_html(text: str) -> str:
+    """
+    Clean LLM-generated HTML so Telegram won't reject it.
+    - Strips unsupported tags (keeps their text content)
+    - Closes any unclosed valid tags
+    """
+    if not text:
+        return text
+
+    result: list[str] = []
+    open_stack: list[str] = []  # tags opened but not yet closed
+    pos = 0
+
+    for m in _HTML_TAG_RE.finditer(text):
+        # Append the literal text before this tag
+        result.append(text[pos:m.start()])
+        pos = m.end()
+
+        closing = m.group(1) == "/"
+        tag = m.group(2).lower()
+        attrs = m.group(3) or ""
+
+        if tag not in _TELEGRAM_ALLOWED_TAGS:
+            # Unsupported tag — drop the tag but keep nothing (content will still flow through)
+            continue
+
+        if closing:
+            # Only emit the closing tag if we actually opened this tag
+            if tag in open_stack:
+                # Close any tags opened after this one (auto-close nested unclosed tags)
+                while open_stack and open_stack[-1] != tag:
+                    result.append(f"</{open_stack.pop()}>")
+                if open_stack:
+                    open_stack.pop()
+                result.append(f"</{tag}>")
+        else:
+            result.append(f"<{tag}{attrs}>")
+            # <a> and block-level tags need tracking; void-like usage is rare in LLM output
+            open_stack.append(tag)
+
+    # Append remaining text
+    result.append(text[pos:])
+
+    # Close any still-open tags in reverse order
+    for tag in reversed(open_stack):
+        result.append(f"</{tag}>")
+
+    return "".join(result)
+
+
+async def _send_llm_reply(message: Message, reply: str) -> None:
+    """Send an LLM reply with HTML. If Telegram rejects the HTML, retry as plain text."""
+    from aiogram.exceptions import TelegramBadRequest
+
+    cleaned = _sanitize_llm_html(reply)
+    try:
+        await message.answer(cleaned)
+    except TelegramBadRequest:
+        # Strip all remaining tags and send as plain text
+        plain = re.sub(r"<[^>]+>", "", reply)
+        with suppress(Exception):
+            await message.answer(plain)
+
+
 def _chat_lock(chat_id: int) -> asyncio.Lock:
     lock = _CHAT_LOCKS.get(chat_id)
     if lock is None:
@@ -944,7 +1013,7 @@ async def _dispatch_command_text(message: Message, synthetic_text: str) -> bool:
 
     llm_reply = await _llm_fallback_reply(synthetic_text, settings, chat_id=chat_id)
     if llm_reply:
-        await message.answer(llm_reply)
+        await _send_llm_reply(message, llm_reply)
         return True
     return False
 
@@ -969,12 +1038,12 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
         # Always use live-data path — Claude/Grok with market context answers everything better
         llm_reply = await _llm_market_chat_reply(raw_text, settings, chat_id=chat_id)
         if llm_reply:
-            await message.answer(llm_reply)
+            await _send_llm_reply(message, llm_reply)
             return True
         # Bot-meta questions (how-to, features) fall back to plain reply
         if _BOT_META_RE.search(raw_text):
             llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
-            await message.answer(llm_reply or smalltalk_reply(settings))
+            await _send_llm_reply(message, llm_reply or smalltalk_reply(settings))
             return True
         return False
 
@@ -3559,7 +3628,7 @@ async def route_text(message: Message) -> None:
             if hub.llm_client and chat_mode == "chat_only":
                 llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
-                    await message.answer(llm_reply)
+                    await _send_llm_reply(message, llm_reply)
                     return
                 await message.answer("signal unclear right now. try again in a sec.")
                 return
@@ -3574,7 +3643,7 @@ async def route_text(message: Message) -> None:
                         pass
                 llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
-                    await message.answer(llm_reply)
+                    await _send_llm_reply(message, llm_reply)
                     return
 
             if chat_mode in {"hybrid", "tool_first"} and (parsed.intent == Intent.UNKNOWN or (parsed.requires_followup and parsed.intent == Intent.UNKNOWN)):
@@ -3590,7 +3659,7 @@ async def route_text(message: Message) -> None:
                 if parsed.intent == Intent.UNKNOWN:
                     llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                     if llm_reply:
-                        await message.answer(llm_reply)
+                        await _send_llm_reply(message, llm_reply)
                         return
                     english_phrase = is_likely_english_phrase(text)
                     symbol_hint = None if english_phrase else _extract_action_symbol_hint(text)
@@ -3620,7 +3689,7 @@ async def route_text(message: Message) -> None:
                     return
                 llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
-                    await message.answer(llm_reply)
+                    await _send_llm_reply(message, llm_reply)
                     return
                 symbol_hint = _extract_action_symbol_hint(text)
                 await message.answer(
