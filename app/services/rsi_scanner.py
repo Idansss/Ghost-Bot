@@ -17,6 +17,13 @@ from app.db.models import IndicatorSnapshot, UniverseSymbol
 
 logger = logging.getLogger(__name__)
 
+# Hardcoded fallback universe used when all dynamic sources (CoinGecko, Binance, DB) fail.
+_FALLBACK_SYMBOLS = [
+    "BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX", "TRX", "DOT",
+    "LINK", "MATIC", "LTC", "UNI", "ATOM", "SHIB", "XLM", "NEAR", "APT", "ARB",
+    "OP", "INJ", "SUI", "PEPE", "WIF", "FIL", "ICP", "RENDER", "FET", "JUP",
+]
+
 
 class RSIScannerService:
     SUPPORTED_SCAN_TIMEFRAMES = {"15m", "1h", "4h", "1d"}
@@ -135,10 +142,15 @@ class RSIScannerService:
                 .limit(cap)
             )
             rows = query.all()
-        return [
+        db_rows = [
             {"symbol": str(symbol).upper(), "quote_volume_24h": float(quote_vol or 0.0)}
             for symbol, quote_vol in rows
         ]
+        if db_rows:
+            return db_rows
+        # Last resort: static fallback so the scanner always has something to work with.
+        logger.warning("rsi_universe_using_fallback", extra={"event": "rsi_universe_fallback"})
+        return [{"symbol": s, "quote_volume_24h": 0.0} for s in _FALLBACK_SYMBOLS[:cap]]
 
     async def refresh_universe(self, universe_size: int | None = None) -> dict:
         cap = max(20, min(int(universe_size or self.universe_size), 1000))
@@ -346,6 +358,8 @@ class RSIScannerService:
     async def _scan_live_universe(self, timeframe: str, mode: str, limit: int, rsi_length: int) -> list[dict]:
         top = await self._top_usdt_symbols(universe_size=self.live_fallback_universe)
         universe = [str(row["symbol"]).upper() for row in top]
+        if not universe:
+            universe = _FALLBACK_SYMBOLS[: self.live_fallback_universe]
         sem = asyncio.Semaphore(self.concurrency)
 
         async def _one(sym: str) -> dict | None:
