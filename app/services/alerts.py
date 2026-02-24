@@ -244,7 +244,7 @@ class AlertsService:
                         f"trading at <b>${current_price:,.2f}</b> right now. you set this one — go check the chart."
                     )
                     try:
-                        await notifier(user.telegram_chat_id, msg)
+                        await notifier(user.telegram_chat_id, msg, symbol=alert.symbol)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("alert_notify_failed", extra={"chat_id": user.telegram_chat_id, "error": str(exc)})
 

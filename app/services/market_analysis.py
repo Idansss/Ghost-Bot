@@ -9,7 +9,24 @@ from app.adapters.derivatives import DerivativesAdapter
 from app.adapters.ohlcv import BINANCE_SUPPORTED_INTERVALS, OHLCVAdapter
 from app.adapters.prices import PriceAdapter
 from app.core.fmt import fmt_level
-from app.core.ta import atr, bollinger_mid, consolidation_zone, ema, macd, pivot_levels, rsi
+from app.core.ta import (
+    adx,
+    atr,
+    bollinger_bands,
+    bollinger_mid,
+    candlestick_patterns,
+    consolidation_zone,
+    ema,
+    fibonacci_retracements,
+    ichimoku,
+    macd,
+    obv,
+    pivot_levels,
+    rsi,
+    sma,
+    stochastic,
+    vwap,
+)
 from app.services.market_context import MarketContextService, format_market_context
 from app.services.news import NewsService
 
@@ -262,10 +279,21 @@ class MarketAnalysisService:
                 trend_score += 1 if ema_vals[ema_anchor_period] > ema_vals[ema_secondary_period] else -1
             trend_score += 1 if rsi_vals[rsi_primary_period] >= 50 else -1
 
+            # Full Bollinger, Stochastic, ADX per timeframe
+            bb_u, bb_m, bb_lo = bollinger_bands(close, 20, 2.0)
+            stoch_k, stoch_d = stochastic(df, 14, 3)
+            adx_val = self._safe_last(adx(df, 14), 25.0)
             per_tf_metrics[tf] = {
                 "close": close_last,
                 "ema": ema_vals,
                 "rsi": rsi_vals,
+                "sma20": self._safe_last(sma(close, 20), close_last),
+                "bb_upper": self._safe_last(bb_u, close_last),
+                "bb_mid": self._safe_last(bb_m, close_last),
+                "bb_lower": self._safe_last(bb_lo, close_last),
+                "stoch_k": self._safe_last(stoch_k, 50.0),
+                "stoch_d": self._safe_last(stoch_d, 50.0),
+                "adx": adx_val,
             }
 
         df_primary = frames[primary_tf]
@@ -277,10 +305,29 @@ class MarketAnalysisService:
 
         close_primary = df_primary["close"]
         close_higher = df_higher["close"]
-        macd_line, macd_signal = macd(close_primary)
+        macd_line, macd_signal, macd_hist = macd(close_primary)
         macd_now = self._safe_last(macd_line, 0.0)
         macd_sig_now = self._safe_last(macd_signal, 0.0)
+        macd_hist_now = self._safe_last(macd_hist, 0.0)
         bb_mid_higher = self._safe_last(bollinger_mid(close_higher, 20), current)
+        # VWAP, OBV, Fibonacci, candlestick on primary (and higher for Fib)
+        vwap_primary = self._safe_last(vwap(df_primary), current) if "volume" in df_primary.columns and df_primary["volume"].notna().any() else None
+        obv_primary = None
+        if "volume" in df_primary.columns and df_primary["volume"].notna().any():
+            obv_ser = obv(close_primary, df_primary["volume"].fillna(0))
+            obv_primary = float(obv_ser.iloc[-1]) if not obv_ser.empty else None
+        fib_levels = fibonacci_retracements(resistance, support)
+        candles_primary = candlestick_patterns(df_primary, 3)
+        candles_higher = candlestick_patterns(df_higher, 3)
+        # Ichimoku on primary (last values for cloud position)
+        tenkan, kijun, senkou_a, senkou_b, chikou = ichimoku(df_primary)
+        ichimoku_primary = {
+            "tenkan": self._safe_last(tenkan, current),
+            "kijun": self._safe_last(kijun, current),
+            "senkou_a": self._safe_last(senkou_a, current),
+            "senkou_b": self._safe_last(senkou_b, current),
+            "chikou": self._safe_last(chikou, current),
+        }
 
         trend_score += 1 if macd_now > macd_sig_now else -1
         inferred = "long" if trend_score >= 0 else "short"
@@ -308,18 +355,39 @@ class MarketAnalysisService:
         rsi_primary = per_tf_metrics[primary_tf]["rsi"][rsi_primary_period]
         rsi_higher = per_tf_metrics[higher_tf]["rsi"][rsi_primary_period]
 
+        stoch_primary = per_tf_metrics[primary_tf].get("stoch_k", 50), per_tf_metrics[primary_tf].get("stoch_d", 50)
+        adx_primary = per_tf_metrics[primary_tf].get("adx", 25)
+        bb_primary = per_tf_metrics[primary_tf].get("bb_upper"), per_tf_metrics[primary_tf].get("bb_mid"), per_tf_metrics[primary_tf].get("bb_lower")
+
         bullets = [
             (
                 f"Trend: {primary_tf} EMA{ema_anchor_period}/{ema_secondary_period} is "
                 f"{'bullish' if ema_primary_fast > ema_primary_slow else 'bearish'}, "
-                f"{higher_tf} is {'bullish' if ema_higher_fast > ema_higher_slow else 'bearish'}."
+                f"{higher_tf} is {'bullish' if ema_higher_fast > ema_higher_slow else 'bearish'}. "
+                f"ADX {primary_tf}={adx_primary:.0f} (trend strength)."
             ),
             (
-                f"Momentum: RSI{rsi_primary_period} {primary_tf}={rsi_primary:.1f}, "
-                f"{higher_tf}={rsi_higher:.1f}, MACD={'up' if macd_now > macd_sig_now else 'down'}."
+                f"Momentum: RSI{rsi_primary_period} {primary_tf}={rsi_primary:.1f}, {higher_tf}={rsi_higher:.1f}. "
+                f"MACD {'bullish' if macd_now > macd_sig_now else 'bearish'}. "
+                f"Stochastic %K={stoch_primary[0]:.0f} %D={stoch_primary[1]:.0f}."
             ),
-            f"Structure: support {fmt_level(support)}, resistance {fmt_level(resistance)}, BB mid {higher_tf} {fmt_level(bb_mid_higher)}.",
+            (
+                f"Structure: support {fmt_level(support)}, resistance {fmt_level(resistance)}. "
+                f"Bollinger {primary_tf}: upper {fmt_level(bb_primary[0])} mid {fmt_level(bb_primary[1])} lower {fmt_level(bb_primary[2])}. "
+                f"Fib 0.382 {fmt_level(fib_levels['0.382'])}, 0.618 {fmt_level(fib_levels['0.618'])}."
+            ),
         ]
+        if vwap_primary is not None:
+            bullets.append(f"VWAP {primary_tf}: {fmt_level(vwap_primary)} (price {'above' if current >= vwap_primary else 'below'} VWAP).")
+        if candles_primary or candles_higher:
+            patterns = list(dict.fromkeys(candles_primary + candles_higher))
+            bullets.append(f"Candles: {', '.join(patterns) or 'none'}.")
+        cloud_top = max(ichimoku_primary["senkou_a"], ichimoku_primary["senkou_b"])
+        cloud_bot = min(ichimoku_primary["senkou_a"], ichimoku_primary["senkou_b"])
+        bullets.append(
+            f"Ichimoku {primary_tf}: Tenkan {fmt_level(ichimoku_primary['tenkan'])}, Kijun {fmt_level(ichimoku_primary['kijun'])}, "
+            f"price {'above' if current > cloud_top else 'below' if current < cloud_bot else 'in'} cloud."
+        )
 
         if include_derivatives_flag:
             bullets.append(
@@ -368,6 +436,7 @@ class MarketAnalysisService:
                 "rsi_periods": rsi_set,
                 "macd": macd_now,
                 "macd_signal": macd_sig_now,
+                "macd_histogram": macd_hist_now,
                 "atr_primary": atr_primary,
                 "primary_tf": primary_tf,
                 "higher_tf": higher_tf,
@@ -376,6 +445,14 @@ class MarketAnalysisService:
                 "include_derivatives": include_derivatives_flag,
                 "include_news": include_news_flag,
                 "market_context": market_context,
+                "per_tf_metrics": per_tf_metrics,
+                "support": support,
+                "resistance": resistance,
+                "vwap_primary": vwap_primary,
+                "obv_primary": obv_primary,
+                "fibonacci": fib_levels,
+                "candlestick_patterns": candles_primary + candles_higher,
+                "ichimoku_primary": ichimoku_primary,
             },
         }
 

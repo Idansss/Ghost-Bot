@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+from aiogram.types import InlineKeyboardMarkup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.core.config import get_settings
@@ -10,14 +12,31 @@ from app.core.container import ServiceHub
 logger = logging.getLogger(__name__)
 
 
+def _alert_triggered_menu(symbol: str) -> InlineKeyboardMarkup:
+    """Quick follow-up actions shown right after an alert fires."""
+    sym = symbol.upper()
+    kb = InlineKeyboardBuilder()
+    kb.button(text=f"Analyze {sym}", callback_data=f"quick:analysis_tf:{sym}:1h")
+    kb.button(text=f"Chart {sym}", callback_data=f"quick:chart:{sym}:1h")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
 class WorkerScheduler:
     def __init__(self, hub: ServiceHub) -> None:
         self.hub = hub
         self.settings = get_settings()
         self.scheduler = AsyncIOScheduler(timezone="UTC")
 
-    async def _notify(self, chat_id: int, text: str) -> None:
-        await self.hub.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+    async def _notify(self, chat_id: int, text: str, **kwargs) -> None:
+        symbol: str | None = kwargs.get("symbol")
+        reply_markup = _alert_triggered_menu(symbol) if symbol else None
+        await self.hub.bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
 
     async def _process_alerts(self) -> None:
         try:
@@ -66,8 +85,36 @@ class WorkerScheduler:
         except Exception as exc:  # noqa: BLE001
             logger.exception("broadcast_task_failed", extra={"event": "broadcast_task_failed", "error": str(exc)})
 
+    async def _process_scheduled_reports(self) -> None:
+        try:
+            svc = getattr(self.hub, "scheduled_report_service", None)
+            if not svc:
+                return
+            due = await svc.get_due_reports()
+            if not due:
+                return
+            from app.services.market_context import format_market_context
+            ctx = await self.hub.analysis_service.get_market_context()
+            body = "📊 <b>Scheduled market summary</b>\n\n" + format_market_context(ctx)
+            for chat_id, _ in due:
+                try:
+                    await self.hub.bot.send_message(chat_id=chat_id, text=body, parse_mode="HTML")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "scheduled_report_send_failed",
+                        extra={"event": "scheduled_report_send_failed", "chat_id": chat_id, "error": str(exc)},
+                    )
+            logger.info(
+                "scheduled_reports_sent",
+                extra={"event": "scheduled_reports_sent", "count": len(due)},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("scheduled_reports_task_failed", extra={"event": "scheduled_reports_task_failed", "error": str(exc)})
+
     def start(self) -> None:
         self.scheduler.add_job(self._process_alerts, "interval", seconds=self.settings.alert_check_interval_sec, max_instances=1)
+        if getattr(self.hub, "scheduled_report_service", None):
+            self.scheduler.add_job(self._process_scheduled_reports, "interval", minutes=1, max_instances=1)
         self.scheduler.add_job(self._refresh_news_cache, "interval", minutes=15, max_instances=1)
         self.scheduler.add_job(self._process_giveaways, "interval", seconds=20, max_instances=1)
         self.scheduler.add_job(self._refresh_scan_universe, "interval", minutes=30, max_instances=1)

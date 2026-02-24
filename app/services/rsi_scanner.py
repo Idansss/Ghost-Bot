@@ -355,11 +355,21 @@ class RSIScannerService:
         ranked.sort(key=lambda x: x["rsi"], reverse=(mode != "oversold"))
         return ranked[:limit]
 
-    async def _scan_live_universe(self, timeframe: str, mode: str, limit: int, rsi_length: int) -> list[dict]:
-        top = await self._top_usdt_symbols(universe_size=self.live_fallback_universe)
+    async def _scan_live_universe(
+        self,
+        timeframe: str,
+        mode: str,
+        limit: int,
+        rsi_length: int,
+        max_symbols: int | None = None,
+    ) -> list[dict]:
+        """Scan live OHLCV for RSI. Use max_symbols to cap universe size for fast on-demand scans (e.g. 45)."""
+        size = max(limit + 5, max_symbols or self.live_fallback_universe)
+        size = min(size, self.live_fallback_universe)
+        top = await self._top_usdt_symbols(universe_size=size)
         universe = [str(row["symbol"]).upper() for row in top]
         if not universe:
-            universe = _FALLBACK_SYMBOLS[: self.live_fallback_universe]
+            universe = _FALLBACK_SYMBOLS[: min(size, len(_FALLBACK_SYMBOLS))]
         sem = asyncio.Semaphore(self.concurrency)
 
         async def _one(sym: str) -> dict | None:
@@ -413,20 +423,14 @@ class RSIScannerService:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("rsi_precomputed_query_failed", extra={"event": "rsi_query_error", "error": str(exc)})
                     items = []
+                # When precomputed is empty or thin, use live scan with a small universe so we respond in seconds.
+                # Do NOT run refresh_universe + refresh_indicators here — they are slow and cause timeouts on serverless.
                 if len(items) < max(3, cap // 2):
-                    try:
-                        await self.refresh_universe(self.universe_size)
-                        await self.refresh_indicators(timeframes=[tf], universe_size=self.universe_size, force=True)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning(
-                            "rsi_precompute_refresh_failed",
-                            extra={"event": "rsi_refresh_fallback", "timeframe": tf, "error": str(exc)},
-                        )
-                    try:
-                        items = await self._query_precomputed(tf, mode_norm, cap)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("rsi_precomputed_retry_failed", extra={"event": "rsi_query_error", "error": str(exc)})
-                        items = []
+                    items = await self._scan_live_universe(
+                        tf, mode_norm, cap, rsi_length, max_symbols=45
+                    )
+                    if items:
+                        source = "live_fallback"
             if not items:
                 items = await self._scan_live_universe(tf, mode_norm, cap, rsi_length)
                 source = "live_fallback"
@@ -442,14 +446,14 @@ class RSIScannerService:
                 }
             )
 
-        source_line = "Data source: precomputed multi-exchange snapshots | Updated: just now"
+        source_line = "Multi-exchange snapshots"
         for row in ranked:
             if row.get("source_line"):
                 source_line = row["source_line"]
                 break
 
         return {
-            "summary": f"RSI scan ({mode_norm}) on {tf} using RSI({rsi_length}) [{source}].",
+            "summary": f"RSI scan ({mode_norm}) on {tf} using RSI({rsi_length}).",
             "timeframe": tf,
             "mode": mode_norm,
             "rsi_length": rsi_length,

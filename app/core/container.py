@@ -26,6 +26,9 @@ from app.services.trade_verify import TradeVerifyService
 from app.services.users import UserService
 from app.services.wallet_scan import WalletScanService
 from app.services.watchlist import WatchlistService
+from app.services.portfolio import PortfolioService
+from app.services.trade_journal import TradeJournalService
+from app.services.scheduled_report import ScheduledReportService
 
 
 @dataclass
@@ -54,3 +57,6 @@ class ServiceHub:
     discovery_service: DiscoveryService
     giveaway_service: GiveawayService
     broadcast_service: BroadcastService | None = None
+    portfolio_service: PortfolioService | None = None
+    trade_journal_service: TradeJournalService | None = None
+    scheduled_report_service: ScheduledReportService | None = None

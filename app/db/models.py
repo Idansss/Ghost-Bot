@@ -21,6 +21,7 @@ class User(Base):
     settings_json: Mapped[dict] = mapped_column(JSONB, default=dict)
 
     alerts: Mapped[list[Alert]] = relationship(back_populates="user")
+    positions: Mapped[list[Position]] = relationship(back_populates="user")
 
 
 class Alert(Base):
@@ -156,3 +157,50 @@ class IndicatorSnapshot(Base):
     ema100: Mapped[float | None] = mapped_column(Float, nullable=True)
     ema200: Mapped[float | None] = mapped_column(Float, nullable=True)
     computed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class Position(Base):
+    __tablename__ = "positions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    side: Mapped[str] = mapped_column(String(8), default="long")
+    entry_price: Mapped[float] = mapped_column(Float)
+    size_quote: Mapped[float] = mapped_column(Float, default=0.0)
+    leverage: Mapped[float] = mapped_column(Float, default=1.0)
+    notes: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    user: Mapped[User] = relationship(back_populates="positions")
+
+
+class TradeJournalEntry(Base):
+    __tablename__ = "trade_journal"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    symbol: Mapped[str] = mapped_column(String(20), index=True)
+    side: Mapped[str] = mapped_column(String(8), default="long")
+    entry: Mapped[float] = mapped_column(Float)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop: Mapped[float | None] = mapped_column(Float, nullable=True)
+    targets_json: Mapped[list] = mapped_column(JSONB, default=list)
+    outcome: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    pnl_quote: Mapped[float | None] = mapped_column(Float, nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ScheduledReport(Base):
+    __tablename__ = "scheduled_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    report_type: Mapped[str] = mapped_column(String(32), default="market_summary")
+    cron_hour_utc: Mapped[int] = mapped_column(Integer, default=9)
+    cron_minute_utc: Mapped[int] = mapped_column(Integer, default=0)
+    timezone: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

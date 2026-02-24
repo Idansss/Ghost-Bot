@@ -47,6 +47,9 @@ from app.services.trade_verify import TradeVerifyService
 from app.services.users import UserService
 from app.services.wallet_scan import WalletScanService
 from app.services.watchlist import WatchlistService
+from app.services.portfolio import PortfolioService
+from app.services.trade_journal import TradeJournalService
+from app.services.scheduled_report import ScheduledReportService
 from app.workers.scheduler import WorkerScheduler
 
 logger = logging.getLogger(__name__)
@@ -69,10 +72,17 @@ async def _sync_bot_commands(bot: Bot) -> None:
         ("help", "Show examples + what I can do"),
         ("id", "Show your user/chat id"),
         ("join", "Join active giveaway"),
+        ("goals", "Set your trading goals (for memory)"),
         ("margin", "Position size + margin calculator"),
+        ("name", "Set display name (for memory)"),
         ("news", "Crypto + macro + OpenAI news digest"),
+        ("compare", "Compare prices for multiple symbols"),
+        ("export", "Export alerts or journal"),
+        ("journal", "Trade journal: log, list, stats"),
         ("pnl", "PnL calculator (entry/exit/size/lev)"),
+        ("position", "Track positions and unrealized PnL"),
         ("price", "Latest price + 24h stats"),
+        ("report", "Scheduled daily market summary"),
         ("rsi", "RSI scan (overbought/oversold)"),
         ("scan", "Wallet scan (solana/tron address)"),
         ("settings", "Preferences (default TF, risk, etc.)"),
@@ -315,6 +325,13 @@ def build_hub(settings: Settings, bot: Bot, cache: RedisCache, http: ResilientHT
         discovery_service=discovery_service,
         giveaway_service=giveaway_service,
         broadcast_service=broadcast_service,
+        portfolio_service=PortfolioService(
+            AsyncSessionLocal,
+            price_adapter,
+            max_notional_warning_usd=settings.max_position_notional_warning_usd,
+        ),
+        trade_journal_service=TradeJournalService(AsyncSessionLocal),
+        scheduled_report_service=ScheduledReportService(AsyncSessionLocal),
     )
 
 
@@ -417,6 +434,51 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health() -> dict:
         return {"status": "ok"}
+
+    @app.get("/health/deep")
+    async def health_deep() -> dict:
+        """Check DB, Redis, and optional exchange ping."""
+        out = {"status": "ok", "checks": {}}
+        try:
+            async with AsyncSessionLocal() as session:
+                await session.execute(text("SELECT 1"))
+            out["checks"]["db"] = "ok"
+        except Exception as e:
+            out["checks"]["db"] = str(e)
+            out["status"] = "degraded"
+        try:
+            await app.state.cache.redis.ping()
+            out["checks"]["redis"] = "ok"
+        except Exception as e:
+            out["checks"]["redis"] = str(e)
+            out["status"] = "degraded"
+        if getattr(app.state, "settings", None) and getattr(app.state.settings, "binance_base_url", None):
+            try:
+                await app.state.http.get_json(f"{app.state.settings.binance_base_url}/api/v3/ping")
+                out["checks"]["exchange"] = "ok"
+            except Exception as e:
+                out["checks"]["exchange"] = str(e)
+        return out
+
+    @app.get("/admin/stats")
+    async def admin_stats(req: Request) -> dict:
+        if not _cron_authorized(req):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        try:
+            async with AsyncSessionLocal() as session:
+                r1 = await session.execute(
+                    text(
+                        "SELECT COUNT(DISTINCT telegram_chat_id) FROM users WHERE last_seen_at > NOW() - INTERVAL '1 day'"
+                    )
+                )
+                r2 = await session.execute(text("SELECT COUNT(*) FROM alerts WHERE status = 'active'"))
+            return {
+                "dau": r1.scalar() or 0,
+                "active_alerts": r2.scalar() or 0,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e)) from e
 
     @app.get("/ready")
     async def ready() -> dict:

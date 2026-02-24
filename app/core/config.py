@@ -103,6 +103,10 @@ class Settings(BaseSettings):
     test_mode: bool = False
     mock_prices: str = ""
 
+    feature_flags: str = Field(default="portfolio,journal,backtest,scheduled_report,multi_compare,export", alias="FEATURE_FLAGS")
+    max_position_notional_warning_usd: float = Field(default=100_000.0, alias="MAX_POSITION_NOTIONAL_WARNING_USD")
+    analysis_requests_per_day: int = Field(default=100, alias="ANALYSIS_REQUESTS_PER_DAY")
+
     def rss_feed_list(self) -> List[str]:
         return [x.strip() for x in self.news_rss_feeds.split(";") if x.strip()]
 
@@ -148,6 +152,9 @@ class Settings(BaseSettings):
             if tf:
                 out.append(tf)
         return out or ["15m", "1h", "4h", "1d"]
+
+    def feature_flags_set(self) -> set:
+        return {x.strip().lower() for x in self.feature_flags.split(",") if x.strip()}
 
 
 @lru_cache(maxsize=1)

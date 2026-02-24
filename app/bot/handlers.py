@@ -14,17 +14,23 @@ from aiogram.filters import Command
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from app.bot.keyboards import (
+    alert_created_menu,
     alert_quick_menu,
     alpha_quick_menu,
     analysis_actions,
+    analysis_progressive_menu,
     chart_quick_menu,
     command_center_menu,
+    confirm_understanding_kb,
     ema_quick_menu,
+    feedback_buttons,
+    feedback_reason_kb,
     findpair_quick_menu,
     giveaway_duration_menu,
     giveaway_menu,
     giveaway_winners_menu,
     heatmap_quick_menu,
+    llm_reply_keyboard,
     news_quick_menu,
     rsi_quick_menu,
     scan_quick_menu,
@@ -37,10 +43,12 @@ from app.bot.keyboards import (
 )
 from app.bot.templates import (
     asset_unsupported_template,
+    clarifying_question,
     correlation_template,
     cycle_template,
     giveaway_status_template,
     help_text,
+    market_condition_warning,
     news_template,
     pair_find_template,
     price_guess_template,
@@ -216,18 +224,113 @@ def _sanitize_llm_html(text: str) -> str:
     return "".join(result)
 
 
-async def _send_llm_reply(message: Message, reply: str) -> None:
-    """Send an LLM reply with HTML. If Telegram rejects the HTML, retry as plain text."""
+def _build_communication_memory_block(settings: dict | None) -> str:
+    """Build prompt block for communication style, memory (name, goals, last symbols)."""
+    s = settings or {}
+    style = str(s.get("communication_style") or "friendly").strip().lower()
+    style_rules = {
+        "short": "Keep replies to 1–2 sentences. No preamble.",
+        "detailed": "Give a one-line summary first, then 2–3 key points, then optional detail. Use line breaks.",
+        "friendly": "Casual tone; 'fren' or 'anon' once. Match question length.",
+        "formal": "Professional tone. No slang.",
+    }
+    style_rule = style_rules.get(style, style_rules["friendly"])
+    parts = [f"COMMUNICATION: User prefers {style} style. {style_rule}"]
+    name = (s.get("display_name") or "").strip()
+    if name:
+        parts.append(f"Call them {name}.")
+    goals = (s.get("trading_goals") or "").strip()[:200]
+    if goals:
+        parts.append(f"Their stated goals: {goals}")
+    last_syms = s.get("last_symbols") or []
+    if isinstance(last_syms, list) and last_syms:
+        syms = [str(x).upper() for x in last_syms[:5] if x]
+        if syms:
+            parts.append(f"They recently asked about: {', '.join(syms)}.")
+    prefs = s.get("feedback_prefs") or {}
+    if isinstance(prefs, dict) and prefs.get("prefers_shorter"):
+        parts.append("User has asked for shorter answers before; keep it brief.")
+    return " ".join(parts)
+
+
+async def _append_last_symbol(chat_id: int, symbol: str) -> None:
+    """Append symbol to user's last_symbols (max 5) for memory."""
+    hub = _require_hub()
+    settings = await hub.user_service.get_settings(chat_id)
+    last = list(settings.get("last_symbols") or [])
+    if not isinstance(last, list):
+        last = []
+    sym = (symbol or "").upper().strip()
+    if not sym:
+        return
+    last = [sym] + [x for x in last if str(x).upper() != sym][:4]
+    await hub.user_service.update_settings(chat_id, {"last_symbols": last})
+
+
+async def _send_llm_reply(
+    message: Message,
+    reply: str,
+    settings: dict | None = None,
+    user_message: str | None = None,
+    add_quick_replies: bool = True,
+) -> None:
+    """Send an LLM reply with HTML. Optionally attach quick-reply + feedback keyboard and cache for followups.
+    In groups, if settings.reply_in_dm, send full reply to user's DM and post 'Sent you a DM' in the group."""
     from aiogram.exceptions import TelegramBadRequest
 
     cleaned = _sanitize_llm_html(reply)
+    reply_to = message.message_id if message else None
+    chat_id = message.chat.id if message else None
+    if add_quick_replies and chat_id and user_message is not None:
+        try:
+            hub = _require_hub()
+            await hub.cache.set_json(f"llm:last_reply:{chat_id}", reply, ttl=3600)
+            await hub.cache.set_json(f"llm:last_user:{chat_id}", user_message, ttl=3600)
+        except Exception:  # noqa: BLE001
+            pass
+    # If reply starts with "You want:" use confirm buttons so user can confirm or rephrase
+    use_confirm = add_quick_replies and cleaned.strip().lower().startswith("you want:")
+    reply_markup = confirm_understanding_kb() if use_confirm else (llm_reply_keyboard() if add_quick_replies else None)
+
+    in_group = getattr(message.chat, "type", None) in ("group", "supergroup")
+    reply_in_dm = (settings or {}).get("reply_in_dm")
+    if in_group and not reply_in_dm and getattr(message.from_user, "id", None):
+        try:
+            user_settings = await _require_hub().user_service.get_settings(message.from_user.id)
+            reply_in_dm = user_settings.get("reply_in_dm")
+        except Exception:
+            pass
+    if in_group and reply_in_dm and getattr(message.from_user, "id", None):
+        try:
+            await message.bot.send_message(
+                message.from_user.id, cleaned, reply_markup=reply_markup
+            )
+            await message.answer("Sent you a DM.", reply_to_message_id=reply_to)
+        except TelegramBadRequest:
+            plain = re.sub(r"<[^>]+>", "", reply)
+            try:
+                await message.bot.send_message(
+                    message.from_user.id, plain, reply_markup=reply_markup
+                )
+                await message.answer("Sent you a DM.", reply_to_message_id=reply_to)
+            except Exception:
+                try:
+                    await message.answer(
+                        cleaned, reply_to_message_id=reply_to, reply_markup=reply_markup
+                    )
+                except TelegramBadRequest:
+                    await message.answer(plain, reply_to_message_id=reply_to)
+        return
     try:
-        await message.answer(cleaned)
+        await message.answer(
+            cleaned, reply_to_message_id=reply_to, reply_markup=reply_markup
+        )
     except TelegramBadRequest:
-        # Strip all remaining tags and send as plain text
         plain = re.sub(r"<[^>]+>", "", reply)
         with suppress(Exception):
-            await message.answer(plain)
+            await message.answer(
+                plain, reply_to_message_id=reply_to, reply_markup=reply_markup
+            )
 
 
 def _chat_lock(chat_id: int) -> asyncio.Lock:
@@ -284,6 +387,44 @@ async def _run_with_typing_lock(bot, chat_id: int, runner) -> None:
         typing_task.cancel()
         with suppress(Exception):
             await typing_task
+
+
+async def _market_aware_gm_reply(hub: ServiceHub, name: str) -> str:
+    """Try to return a BTC-context-aware GM greeting, fall back to static pool."""
+    try:
+        ctx = await asyncio.wait_for(hub.analysis_service.get_market_context(), timeout=3.0)
+        if isinstance(ctx, dict):
+            btc_change: float | None = None
+            for key in ("btc_change_pct_1h", "btc_pct_change_1h", "btc_change_pct", "btc_pct_change"):
+                val = ctx.get(key)
+                if val is not None:
+                    try:
+                        btc_change = float(val)
+                        break
+                    except (TypeError, ValueError):
+                        pass
+            if btc_change is not None:
+                direction = "up" if btc_change > 0 else "down"
+                abs_pct = abs(btc_change)
+                mood = "volatile" if abs_pct >= 3.0 else ("active" if abs_pct >= 1.5 else "quiet")
+                pool = [
+                    f"gm {name} 👋 btc {direction} {abs_pct:.1f}% — {mood} session. drop a ticker or ask what's moving.",
+                    f"gm {name} ☀️ btc is {direction} {abs_pct:.1f}%. tape is {'hot' if abs_pct >= 2.0 else 'breathing'}. what are we hunting?",
+                    f"gm — btc {direction} {abs_pct:.1f}% this hour. {mood} market. send a coin.",
+                ]
+                return random.choice(pool)
+    except Exception:  # noqa: BLE001
+        pass
+    return random.choice(_GM_REPLIES)
+
+
+async def _maybe_send_market_warning(message: Message) -> None:
+    """Send a one-liner warning if it's a weekend session (thin liquidity)."""
+    now = datetime.now(timezone.utc)
+    if now.weekday() < 5:  # Mon–Fri: no warning
+        return
+    with suppress(Exception):
+        await message.answer("<i>⚠ weekend session — liquidity is thin, spreads are wide. size accordingly.</i>")
 
 
 def init_handlers(hub: ServiceHub) -> None:
@@ -518,10 +659,12 @@ async def _llm_analysis_reply(
         f"Analysis data for {symbol.upper()} ({direction_label} bias):\n"
         f"{json.dumps(payload, ensure_ascii=True, default=str)}\n\n"
         f"BTC/market backdrop: {market_context_text or 'not available'}\n\n"
-        "Write this as Ghost would — start with current price and % change, weave in key levels "
-        "(EMA200, order blocks, bollinger bands, RSI) naturally in prose, mention macro if relevant, "
+        "Write this as Ghost would — start with current price and % change. "
+        "Use the full indicator set in the data: SMA/EMA, RSI, MACD (and histogram), Bollinger Bands, "
+        "support/resistance, Fibonacci levels, VWAP, Stochastic, ATR, OBV, ADX, and any candlestick patterns. "
+        "Weave key levels and readings naturally in prose; mention macro if relevant. "
         "then give entry range / 3 targets / stop as simple plain lines. "
-        "End with one sharp observation. All lowercase, casual trader voice. No HTML tags."
+        "End with one short risk caveat (e.g. don't oversize, cut if structure breaks, wait for confirmation). All lowercase, casual trader voice. No HTML tags."
     )
     history = await _get_chat_history(chat_id) if chat_id is not None else []
     try:
@@ -597,11 +740,11 @@ async def _render_analysis_text(
         return trade_plan_template(payload, settings, detailed=detailed)
 
 
-async def _send_ghost_analysis(message: Message, symbol: str, text: str) -> None:
+async def _send_ghost_analysis(message: Message, symbol: str, text: str, direction: str | None = None) -> None:
     with suppress(Exception):
         await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
     await asyncio.sleep(1.3)
-    await message.answer(text, reply_markup=analysis_actions(symbol))
+    await message.answer(text, reply_markup=analysis_progressive_menu(symbol, direction))
 
 
 def _define_keyboard() -> InlineKeyboardMarkup:
@@ -705,15 +848,42 @@ async def _llm_fallback_reply(user_text: str, settings: dict | None = None, chat
         else:
             style = str(settings.get("tone_mode", "wild")).lower()
 
+    comm_memory = _build_communication_memory_block(settings)
     prompt = (
+        f"{comm_memory}\n\n"
+        "GHOST PERSONA (use only when they ask who you are, your personality, or what you're like):\n"
+        "You are Ghost — sharp, no-nonsense, crypto-native. You tell the truth even when it wrecks a bag. "
+        "Slightly unhinged and unfiltered; you don't sugarcoat. You help with levels, risk, and setups but you're not a cheerleader. "
+        "One short paragraph max; match their tone (friendly or formal from settings).\n\n"
         f"User message: {cleaned}\n\n"
-        "Answer this directly and helpfully. Never ask the user for clarification — give your best answer now.\n"
-        "BOT CAPABILITIES (use this if they ask how to use features):\n"
-        "- Alerts: 'alert BTC 100000 above' or tap Create Alert button\n"
+        "Answer exactly what was asked. Do not divert to a different topic. Same question → same type of answer.\n"
+        "STRUCTURE: One-line summary first, then key points. CONFIDENCE: When uncertain add '(low confidence)'.\n"
+        "LIMITS: If out of scope (tax/legal/guarantees), say so in one sentence and suggest what you can do.\n"
+        "Do NOT add a 'coins to watch' or 'coins to watch right now' section unless they explicitly ask for a watchlist or what to watch. Never use that phrase as a heading otherwise.\n"
+        "NEVER tie metals (gold, XAU, silver) to crypto — no inverse/safe-haven links, no predicting metals from BTC.\n\n"
+        "BOT CAPABILITIES (only when they ask how to use the bot):\n"
+        "- Alerts: 'alert BTC 100000 above' or Create Alert button\n"
         "- Analysis: 'BTC long' or 'ETH short 4h'\n"
         "- Watchlist: 'coins to watch', 'top movers'\n"
         "- News: 'latest crypto news'\n"
-        "- Price: /price BTC\n"
+        "- Price: /price BTC\n\n"
+        "TRADING FRAMEWORK (only when they ask about trading concepts, strategy, or risk — do not list headings unless they explicitly ask):\n"
+        "- Market structure: trends vs ranges, breakouts, liquidity.\n"
+        "- Support/resistance and supply/demand zones.\n"
+        "- Risk management: position sizing, risk/reward, stop losses, max drawdown rules.\n"
+        "- Trading psychology: discipline, emotional control, avoiding FOMO/revenge trading.\n"
+        "- Volatility: calm vs explosive conditions and when to press vs chill.\n"
+        "- Order types & execution: market/limit/stop, slippage, spreads.\n"
+        "- Timeframes & top-down analysis: higher TF bias, lower TF entries.\n"
+        "- Trade planning: setups, entry/exit rules, invalidation.\n"
+        "- Journaling & review: tracking stats, finding what works.\n"
+        "- Backtesting & forward testing: proof before size.\n"
+        "- Fundamentals & catalysts: news, macro, tokenomics, unlocks.\n"
+        "- On-chain basics: flows, exchange reserves, whales, stablecoin liquidity.\n"
+        "- Liquidity & order flow concepts: where stops sit, imbalances.\n"
+        "- Correlation awareness: BTC dominance, alt correlation, equities/DXY.\n"
+        "- Market regimes: bull, bear, chop; adapting strategy.\n"
+        "- Security & operations: wallet safety, avoiding scams, basic ops hygiene.\n"
     )
     history = await _get_chat_history(chat_id) if chat_id is not None else []
     try:
@@ -751,7 +921,9 @@ _BOT_META_RE = re.compile(
     r"why\s+is\s+(the\s+)?(alert|button|command|bot|feature)|"
     r"how\s+do\s+i\s+(create|set|use|make)|what\s+commands|what\s+can\s+you|"
     r"how\s+to\s+(create|set|use)|are\s+you\s+working|still\s+(not\s+)?work|"
-    r"failing|broken|feature\s+not|doesn'?t\s+work)\b",
+    r"failing|broken|feature\s+not|doesn'?t\s+work|"
+    r"who\s+are\s+you|what('s|\s+is)\s+your\s+personality|your\s+personality|"
+    r"personality\s+like|whats\s+your\s+personality|what\s+are\s+you|describe\s+yourself)\b",
     re.IGNORECASE,
 )
 
@@ -824,18 +996,51 @@ async def _llm_market_chat_reply(
 
     context_block = ""
     if mkt_text:
-        context_block += f"Live market snapshot: {mkt_text}\n"
+        context_block += f"Live market snapshot (BTC, ETH, SOL — no other symbols): {mkt_text}\n"
+    else:
+        context_block += "Live market snapshot: not available.\n"
     if news_lines:
         context_block += f"Recent crypto news:\n{news_lines}\n"
 
+    ultra = (settings or {}).get("ultra_brief")
+    length_rule = (
+        "Answer in one short sentence only."
+        if ultra
+        else "Match length to the question: short question → short answer; open-ended → fuller answer. Paragraphs 3–4 sentences max. Use \"fren\" or \"anon\" once, not every sentence."
+    )
+    comm_memory = _build_communication_memory_block(settings)
     prompt = (
-        f"{context_block}"
+        f"{context_block}\n"
+        f"{comm_memory}\n\n"
+        "GHOST PERSONA (only when they ask who you are or your personality): "
+        "You are Ghost — sharp, no-nonsense, crypto-native. You tell the truth even when it hurts. Slightly unhinged, unfiltered; not a cheerleader. One short paragraph max.\n\n"
+        "RULES:\n"
+        "- The snapshot above has BTC, ETH, SOL. It does NOT include gold (XAUUSDT), other alts, or forex. "
+        "If the user asked about a symbol that is NOT in the snapshot, say clearly: \"I don't have recent data for [that symbol].\" "
+        "Do not give analysis for that symbol as if you had data. Do not substitute BTC/ETH data for it.\n"
+        "- NEVER tie metals to crypto. Do not say gold/XAU moves inverse to crypto, or is a safe haven when crypto falls, or predict metals from BTC. If they ask about gold or XAU, say you don't link metals to crypto and don't speculate on that; keep the answer short and do not add a 'coins to watch' with XAU context.\n"
+        "- If the user says \"outdated price\" or \"old data\" or \"prices are wrong\": acknowledge it in one short sentence. "
+        "Then either say the snapshot above is the freshest you have, or that you don't have newer data. "
+        "Do NOT ignore the comment and launch into a long analysis. Answer what they said first.\n"
+        "- Otherwise: answer exactly what was asked. Do not divert. Same question later → same kind of answer (with updated data).\n"
+        f"- {length_rule}\n"
+        "- STRUCTURE: One-line summary first, then key points/steps, then optional details. Use line breaks.\n"
+        "- CONFIDENCE: When uncertain or extrapolating, add \"Likely\" or \"(low confidence)\". When data-backed, no need to label.\n"
+        "- NEXT ACTION: End with one short suggested next step or question when helpful (e.g. \"Want a chart for that?\" \"Set an alert?\"). Don't force every time.\n"
+        "- LIMITS: If the request is out of scope (tax/legal advice, guaranteed outcomes), say so in one sentence and suggest what you can do instead.\n"
+        "- For complex or multi-part requests, start with \"You want: [one-line summary].\" then answer.\n"
+        "- Do NOT add any section titled \"coins to watch\" or \"coins to watch right now\" (with or without entry/targets) when the user asks for a general market snapshot, daily overview, \"what are we looking at\", personality/perspectives, or any single-asset question. Only give that section when they explicitly ask for a watchlist, \"what to watch\", \"what to buy\", or \"coins to watch\". Never use the phrase \"coins to watch right now\" as a heading unless they asked for a watchlist.\n\n"
+        "TRADING FRAMEWORK (use only when relevant; do not list headings unless the user explicitly asks):\n"
+        "- Market structure: trend vs range, breakouts, key liquidity areas.\n"
+        "- Levels: major support/resistance and supply/demand zones.\n"
+        "- Risk: position sizing, risk/reward, stop placement, max drawdown awareness.\n"
+        "- Psychology: discipline, emotional control, avoiding FOMO/revenge trading.\n"
+        "- Volatility & regime: calm vs explosive conditions; bull, bear, and chop adjustment.\n"
+        "- Execution: order types (market/limit/stop), slippage/spreads, and using higher timeframes for bias with lower timeframes for entries.\n"
+        "- Trade plan & review: clear setup, entry/exit rules, invalidation, journaling, backtesting/forward testing before size.\n"
+        "- Context: fundamentals/catalysts (news, macro, unlocks), on-chain/liquidity/flows, correlations/BTC dominance/indices, and basic security/ops.\n\n"
         f"User question: {cleaned}\n\n"
-        "Answer directly and comprehensively using the live data above. "
-        "Give specific coins, prices, catalysts, and your actual directional take. "
-        "If asked which coins to watch — name them with prices and reasons. "
-        "Never ask the user for clarification. Never start with filler phrases. "
-        "Use Telegram HTML formatting: <b>bold</b> for coin names and key levels, <i>italic</i> for closing line."
+        "Telegram HTML: <b>bold</b> for coins and key levels, <i>italic</i> for closing line."
     )
 
     history = await _get_chat_history(chat_id) if chat_id is not None else []
@@ -1008,9 +1213,11 @@ async def _dispatch_command_text(message: Message, synthetic_text: str) -> bool:
             cond = "above" if raw_cond in ("above", "over") else ("below" if raw_cond in ("below", "under") else "cross")
             try:
                 alert = await hub.alerts_service.create_alert(chat_id, sym, cond, float(px))
+                _cond_word = {"above": "crosses above", "below": "crosses below"}.get(cond, "crosses")
                 await message.answer(
-                    f"alert set for <b>{alert.symbol}</b> at <b>${float(px):,.2f}</b>. "
-                    "i'll ping you when we hit it. don't get liquidated"
+                    f"🔔 alert set — <b>{alert.symbol}</b> {_cond_word} <b>${float(px):,.2f}</b>.\n"
+                    "i'll ping you the moment it hits. don't get liquidated.",
+                    reply_markup=alert_created_menu(alert.symbol),
                 )
             except RuntimeError as exc:
                 await message.answer(f"couldn't set that alert — {_safe_exc(exc)}")
@@ -1031,7 +1238,10 @@ async def _dispatch_command_text(message: Message, synthetic_text: str) -> bool:
             )
             await message.answer(parsed.followup_question or "Need one detail.", reply_markup=kb)
             return True
-        await message.answer(parsed.followup_question or unknown_prompt(), reply_markup=smart_action_menu())
+        await message.answer(
+            parsed.followup_question or clarifying_question(_extract_action_symbol_hint(message.text or "")),
+            reply_markup=smart_action_menu(),
+        )
         return True
 
     if await _handle_parsed_intent(message, parsed, settings):
@@ -1039,7 +1249,7 @@ async def _dispatch_command_text(message: Message, synthetic_text: str) -> bool:
 
     llm_reply = await _llm_fallback_reply(synthetic_text, settings, chat_id=chat_id)
     if llm_reply:
-        await _send_llm_reply(message, llm_reply)
+        await _send_llm_reply(message, llm_reply, settings, user_message=synthetic_text)
         return True
     return False
 
@@ -1064,18 +1274,36 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
         # Always use live-data path — Claude/Grok with market context answers everything better
         llm_reply = await _llm_market_chat_reply(raw_text, settings, chat_id=chat_id)
         if llm_reply:
-            await _send_llm_reply(message, llm_reply)
-            return True
+            await _send_llm_reply(message, llm_reply, settings)
+        return True
         # Bot-meta questions (how-to, features) fall back to plain reply
         if _BOT_META_RE.search(raw_text):
             llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
-            await _send_llm_reply(message, llm_reply or smalltalk_reply(settings))
+            await _send_llm_reply(
+                message, llm_reply or smalltalk_reply(settings), settings, user_message=raw_text
+            )
             return True
         return False
 
     if intent == "news_digest":
         limit = max(3, min(_as_int(params.get("limit"), 6), 10))
         topic = params.get("topic")
+        symbol_param = params.get("symbol") or topic
+        # News by asset: if topic/symbol looks like a ticker, use asset headlines
+        if isinstance(symbol_param, str) and 2 <= len(symbol_param.strip()) <= 10 and symbol_param.strip().isalnum():
+            ticker = symbol_param.strip().upper()
+            headlines = await hub.news_service.get_asset_headlines(ticker, limit=limit)
+            if headlines:
+                lines = [f"<b>News for {ticker}</b>", ""]
+                for h in headlines:
+                    title = (h.get("title") or "")[:120]
+                    url = h.get("url") or ""
+                    src = h.get("source") or ""
+                    lines.append(f"• {title}" + (f" ({src})" if src else "") + (f"\n  {url}" if url else ""))
+                await message.answer("\n".join(lines), disable_web_page_preview=True)
+            else:
+                await message.answer(f"No recent headlines for <b>{ticker}</b>. Try general /news.")
+            return True
         mode = str(params.get("mode") or "crypto").strip().lower() or "crypto"
         if isinstance(topic, str) and topic.strip().lower() == "openai" and mode == "crypto":
             mode = "openai"
@@ -1115,6 +1343,7 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
             include_news=bool(params.get("include_news") or params.get("news") or params.get("catalysts")),
         )
         await hub.cache.set_json(f"last_analysis:{chat_id}:{symbol}", payload, ttl=1800)
+        await _append_last_symbol(chat_id, symbol)
         await _remember_analysis_context(chat_id, symbol, side, payload)
         await _remember_source_context(
             chat_id,
@@ -1129,7 +1358,7 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
             settings=settings,
             chat_id=chat_id,
         )
-        await _send_ghost_analysis(message, symbol, analysis_text)
+        await _send_ghost_analysis(message, symbol, analysis_text, direction=side)
         return True
 
     if intent == "rsi_scan":
@@ -1284,9 +1513,11 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
             symbol=symbol,
             context="alert",
         )
+        _cond_word = {"above": "crosses above", "below": "crosses below"}.get(condition, "crosses")
         await message.answer(
-            f"alert set for <b>{alert.symbol}</b> at <b>${float(price):,.2f}</b>. "
-            "i'll ping you when we hit it. don't get liquidated"
+            f"🔔 alert set — <b>{alert.symbol}</b> {_cond_word} <b>${float(price):,.2f}</b>.\n"
+            "i'll ping you the moment it hits. don't get liquidated.",
+            reply_markup=alert_created_menu(alert.symbol),
         )
         return True
 
@@ -1564,6 +1795,7 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         parsed_emas = parsed.entities.get("ema_periods")
         parsed_rsis = parsed.entities.get("rsi_periods")
 
+        await _maybe_send_market_warning(message)
         settings_tfs = _analysis_timeframes_from_settings(settings)
         settings_emas = _parse_int_list(settings.get("preferred_ema_periods", [20, 50, 200]), [20, 50, 200])
         settings_rsis = _parse_int_list(settings.get("preferred_rsi_periods", [14]), [14])
@@ -1583,6 +1815,7 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
                 include_news=bool(parsed.entities.get("include_news")),
                 notes=parsed.entities.get("notes", []),
             )
+            await _append_last_symbol(chat_id, symbol)
         except Exception as exc:  # noqa: BLE001
             err = str(exc).lower()
             if any(
@@ -1614,7 +1847,7 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
             settings=settings,
             chat_id=chat_id,
         )
-        await _send_ghost_analysis(message, symbol, analysis_text)
+        await _send_ghost_analysis(message, symbol, analysis_text, direction=direction)
         return True
 
     if parsed.intent == Intent.SETUP_REVIEW:
@@ -1802,9 +2035,11 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
             symbol=alert.symbol,
             context="alert",
         )
+        _cond_word = {"above": "crosses above", "below": "crosses below"}.get(cond, "crosses")
         await message.answer(
-            f"alert set for <b>{alert.symbol}</b> at <b>${price_val:,.2f}</b>. "
-            "i'll ping you when we hit it. don't get liquidated"
+            f"🔔 alert set — <b>{alert.symbol}</b> {_cond_word} <b>${price_val:,.2f}</b>.\n"
+            "i'll ping you the moment it hits. don't get liquidated.",
+            reply_markup=alert_created_menu(alert.symbol),
         )
         return True
 
@@ -1829,8 +2064,17 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         return True
 
     if parsed.intent == Intent.ALERT_CLEAR:
-        count = await hub.alerts_service.clear_user_alerts(chat_id)
-        await message.answer(f"Cleared {count} alerts.")
+        alerts = await hub.alerts_service.list_alerts(chat_id)
+        count = len(alerts)
+        if count == 0:
+            await message.answer("No alerts to clear.")
+            return True
+        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Yes, clear all", callback_data=f"confirm:clear_alerts:{count}")],
+            [InlineKeyboardButton(text="Cancel", callback_data="confirm:clear_alerts:no")],
+        ])
+        await message.answer(f"Clear all <b>{count}</b> alerts? This can't be undone.", reply_markup=kb, reply_to_message_id=message.message_id)
         return True
 
     if parsed.intent == Intent.ALERT_PAUSE:
@@ -1957,7 +2201,7 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
 
     if parsed.intent == Intent.CYCLE:
         payload = await hub.cycles_service.cycle_check()
-        await message.answer(cycle_template(payload))
+        await message.answer(cycle_template(payload, settings))
         return True
 
     if parsed.intent == Intent.TRADECHECK:
@@ -1981,7 +2225,7 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
             symbol=data["symbol"],
             context="trade check",
         )
-        await message.answer(trade_verification_template(result))
+        await message.answer(trade_verification_template(result, settings))
         return True
 
     if parsed.intent == Intent.CORRELATION:
@@ -1995,7 +2239,7 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
             symbol=parsed.entities["symbol"],
             context="correlation",
         )
-        await message.answer(correlation_template(payload))
+        await message.answer(correlation_template(payload, settings))
         return True
 
     if parsed.intent == Intent.SETTINGS:
@@ -2013,19 +2257,43 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
 @router.message(Command("start"))
 async def start_cmd(message: Message) -> None:
     hub = _require_hub()
-    await hub.user_service.ensure_user(message.chat.id)
+    user = await hub.user_service.ensure_user(message.chat.id)
     name = message.from_user.first_name if message.from_user else "fren"
-    await message.answer(
-        f"gm <b>{name}</b> 👋\n\n"
-        "i'm <b>ghost</b> — your on-chain trading assistant. i live in the market 24/7 so you don't have to.\n\n"
-        "try something like:\n"
-        "· <code>BTC 4h</code> — full technical analysis\n"
-        "· <code>ping me when ETH hits 2000</code> — price alert\n"
-        "· <code>coins to watch</code> — top movers watchlist\n"
-        "· <code>why is BTC pumping</code> — live market read\n\n"
-        "<i>or tap a button below to get started.</i>",
-        reply_markup=smart_action_menu(),
-    )
+    chat_id = message.chat.id
+
+    # Detect new user: created_at within the last 15 seconds
+    try:
+        is_new = (datetime.utcnow() - user.created_at).total_seconds() < 15
+    except Exception:  # noqa: BLE001
+        is_new = False
+
+    if is_new:
+        await message.answer(
+            f"gm <b>{name}</b> 👋\n\n"
+            "i'm <b>ghost</b> — your on-chain trading assistant. i live in the market 24/7 so you don't have to.\n\n"
+            "try something like:\n"
+            "· <code>BTC 4h</code> — full technical analysis\n"
+            "· <code>ping me when ETH hits 2000</code> — price alert\n"
+            "· <code>coins to watch</code> — top movers watchlist\n"
+            "· <code>why is BTC pumping</code> — live market read\n\n"
+            "<i>short questions get short answers. send a ticker for a deep dive. tap a button to start.</i>",
+            reply_markup=smart_action_menu(),
+        )
+    else:
+        # Returning user — check for session continuity
+        continuity = ""
+        with suppress(Exception):
+            last_ctx = await hub.cache.get_json(f"last_analysis_context:{chat_id}")
+            if isinstance(last_ctx, dict) and last_ctx.get("symbol"):
+                sym = str(last_ctx["symbol"]).upper()
+                dir_txt = last_ctx.get("direction") or ""
+                direction_part = f" {dir_txt}" if dir_txt else ""
+                continuity = f"\n\n<i>last time you were watching <b>{sym}{direction_part}</b> — want a fresh read?</i>"
+        await message.answer(
+            f"wb back {name}. ghost is live.{continuity}\n\n"
+            "drop a ticker, ask a question, or tap a button.",
+            reply_markup=smart_action_menu(),
+        )
 
 
 @router.message(Command("help"))
@@ -2062,6 +2330,26 @@ async def settings_cmd(message: Message) -> None:
     await message.answer(settings_text(settings), reply_markup=settings_menu(settings))
 
 
+@router.message(Command("name"))
+async def name_cmd(message: Message) -> None:
+    """Set display name for memory (e.g. /name Alice)."""
+    hub = _require_hub()
+    text = (message.text or "").strip().split(maxsplit=1)[1] if len((message.text or "").strip().split()) > 1 else ""
+    name = (text or "").strip()[:64]
+    await hub.user_service.update_settings(message.chat.id, {"display_name": name})
+    await message.answer(f"Got it. I'll call you {name}." if name else "Display name cleared.")
+
+
+@router.message(Command("goals"))
+async def goals_cmd(message: Message) -> None:
+    """Set trading goals for memory (e.g. /goals swing trading, low risk)."""
+    hub = _require_hub()
+    text = (message.text or "").strip().split(maxsplit=1)[1] if len((message.text or "").strip().split()) > 1 else ""
+    goals = (text or "").strip()[:300]
+    await hub.user_service.update_settings(message.chat.id, {"trading_goals": goals})
+    await message.answer("Goals saved. I'll keep that in mind." if goals else "Goals cleared.")
+
+
 @router.message(Command("alpha"))
 async def alpha_cmd(message: Message) -> None:
     raw = (message.text or "").strip()
@@ -2091,11 +2379,22 @@ async def watch_cmd(message: Message) -> None:
 async def price_cmd(message: Message) -> None:
     raw = (message.text or "").strip()
     args = raw.split(maxsplit=1)[1] if len(raw.split(maxsplit=1)) > 1 else ""
-    text = args.strip()
-    if not text:
-        await message.answer("send symbol to get price.\nexample: <code>/price SOL</code> or <code>/price BTC 1h</code>")
+    symbol = args.strip().upper().lstrip("$") or ""
+    if not symbol:
+        await message.answer("send symbol for quick price.\nExample: <code>/price BTC</code> or <code>/price SOL</code>")
         return
-    await _dispatch_command_text(message, f"watch {text}")
+    hub = _require_hub()
+    try:
+        data = await hub.market_router.get_price(symbol)
+        price = float(data.get("price") or 0)
+        change_24h = data.get("change_24h")
+        if change_24h is not None:
+            line = f"<b>{symbol}</b> ${price:,.2f} ({change_24h:+.2f}%)"
+        else:
+            line = f"<b>{symbol}</b> ${price:,.2f}"
+        await message.answer(line, reply_to_message_id=message.message_id)
+    except Exception:
+        await _dispatch_command_text(message, f"watch {symbol}")
 
 
 @router.message(Command("chart"))
@@ -2216,8 +2515,9 @@ async def news_cmd(message: Message) -> None:
 @router.message(Command("cycle"))
 async def cycle_cmd(message: Message) -> None:
     hub = _require_hub()
+    settings = await hub.user_service.get_settings(message.chat.id)
     payload = await hub.cycles_service.cycle_check()
-    await message.answer(cycle_template(payload))
+    await message.answer(cycle_template(payload, settings))
 
 
 @router.message(Command("scan"))
@@ -2301,9 +2601,11 @@ async def alert_cmd(message: Message) -> None:
             symbol=symbol,
             context="alert",
         )
+        _cond_word = {"above": "crosses above", "below": "crosses below"}.get(condition, "crosses")
         await message.answer(
-            f"alert set for <b>{symbol}</b> at <b>{price}</b>. "
-            "i'll ping you when we hit it. don't get liquidated"
+            f"🔔 alert set — <b>{symbol}</b> {_cond_word} <b>${price:,.2f}</b>.\n"
+            "i'll ping you the moment it hits. don't get liquidated.",
+            reply_markup=alert_created_menu(symbol),
         )
         return
 
@@ -2325,9 +2627,11 @@ async def alert_cmd(message: Message) -> None:
             symbol=symbol,
             context="alert",
         )
+        _cond_word2 = {"above": "crosses above", "below": "crosses below"}.get(condition, "crosses")
         await message.answer(
-            f"alert set for <b>{symbol}</b> at <b>{price}</b>. "
-            "i'll ping you when we hit it. don't get liquidated"
+            f"🔔 alert set — <b>{symbol}</b> {_cond_word2} <b>${price:,.2f}</b>.\n"
+            "i'll ping you the moment it hits. don't get liquidated.",
+            reply_markup=alert_created_menu(symbol),
         )
         return
 
@@ -2399,6 +2703,316 @@ async def alertclear_cmd(message: Message) -> None:
         await message.answer(f"Cleared {count} alerts for {symbol}.")
         return
     await message.answer("Pick clear action.", reply_markup=simple_followup([("Clear all alerts", "cmd:alert:clear"), ("Clear by symbol", "cmd:alert:clear_symbol")]))
+
+
+@router.message(Command("position"))
+async def position_cmd(message: Message) -> None:
+    flags = _settings.feature_flags_set()
+    if "portfolio" not in flags:
+        await message.answer("Portfolio feature is disabled.")
+        return
+    hub = _require_hub()
+    if not getattr(hub, "portfolio_service", None):
+        await message.answer("Portfolio is not available.")
+        return
+    text = (message.text or "").strip().split(maxsplit=1)[1] if (message.text or "").strip().split() else ""
+    args = (text or "").strip().lower().split()
+    chat_id = message.chat.id
+
+    if not args or args[0] == "list":
+        positions = await hub.portfolio_service.list_positions(chat_id)
+        if not positions:
+            await message.answer("No positions. Add one: <code>/position add BTC long 50000 1000 2</code>")
+            return
+        lines = ["<b>Positions</b>", ""]
+        total_pnl = 0.0
+        for p in positions:
+            total_pnl += p.get("pnl_quote", 0) or 0
+            lines.append(
+                f"<code>#{p['id']}</code> <b>{p['symbol']}</b> {p['side']} | entry ${p['entry_price']:,.2f} → ${p['current_price']:,.2f} | "
+                f"PnL {p['pnl_pct']:+.2f}% (${p['pnl_quote']:+,.2f})"
+            )
+        lines.append(f"\n<b>Total unrealized PnL:</b> ${total_pnl:+,.2f}")
+        await message.answer("\n".join(lines))
+        return
+
+    if args[0] == "delete" and len(args) >= 2:
+        try:
+            pid = int(args[1])
+        except ValueError:
+            await message.answer("Usage: /position delete &lt;id&gt;")
+            return
+        ok = await hub.portfolio_service.delete_position(chat_id, pid)
+        await message.answer("Position removed." if ok else "Position not found.")
+        return
+
+    if args[0] == "add" and len(args) >= 5:
+        # /position add SYMBOL long ENTRY SIZE [leverage] [notes...]
+        symbol = (args[1] or "").upper()
+        side = (args[2] or "long").lower()
+        if side not in ("long", "short"):
+            side = "long"
+        try:
+            entry_price = float(args[3])
+            size_quote = float(args[4])
+        except (ValueError, IndexError):
+            await message.answer("Usage: /position add SYMBOL long|short ENTRY_PRICE SIZE_QUOTE [leverage]")
+            return
+        leverage = 1.0
+        notes = ""
+        if len(args) >= 6:
+            try:
+                leverage = float(args[5])
+            except ValueError:
+                notes = " ".join(args[5:])[:255]
+        if len(args) >= 7 and not notes:
+            notes = " ".join(args[6:])[:255]
+        pos, warning = await hub.portfolio_service.add_position(
+            chat_id, symbol=symbol, side=side, entry_price=entry_price, size_quote=size_quote, leverage=leverage, notes=notes or None
+        )
+        if pos is None:
+            await message.answer(warning or "Failed to add position.")
+            return
+        msg = f"Position added: <b>{symbol}</b> {side} @ ${entry_price:,.2f} size ${size_quote:,.0f} {leverage}x"
+        if warning:
+            msg += f"\n⚠️ {warning}"
+        await message.answer(msg)
+        return
+
+    await message.answer(
+        "Usage:\n"
+        "• <code>/position list</code> — list positions\n"
+        "• <code>/position add SYMBOL long|short ENTRY SIZE [leverage]</code>\n"
+        "• <code>/position delete ID</code>"
+    )
+
+
+@router.message(Command("journal"))
+async def journal_cmd(message: Message) -> None:
+    flags = _settings.feature_flags_set()
+    if "journal" not in flags:
+        await message.answer("Journal feature is disabled.")
+        return
+    hub = _require_hub()
+    if not getattr(hub, "trade_journal_service", None):
+        await message.answer("Journal is not available.")
+        return
+    text = (message.text or "").strip().split(maxsplit=1)[1] if len((message.text or "").strip().split()) > 1 else ""
+    args = (text or "").strip().lower().split()
+    chat_id = message.chat.id
+
+    if not args or args[0] == "list":
+        limit = 20
+        if len(args) >= 2 and args[1].isdigit():
+            limit = min(int(args[1]), 50)
+        trades = await hub.trade_journal_service.list_trades(chat_id, limit=limit)
+        if not trades:
+            await message.answer("No journal entries. Log one: <code>/journal log BTC long 50000 51000 100</code>")
+            return
+        lines = ["<b>Trade journal</b>", ""]
+        for t in trades:
+            line = f"<code>#{t['id']}</code> {t['symbol']} {t['side']} entry {t['entry']} → exit {t['exit_price']}"
+            if t.get("pnl_quote") is not None:
+                line += f" | PnL ${t['pnl_quote']:+,.2f}"
+            lines.append(line)
+        await message.answer("\n".join(lines))
+        return
+
+    if args[0] == "stats":
+        days = 30
+        if len(args) >= 2 and args[1].isdigit():
+            days = min(int(args[1]), 365)
+        st = await hub.trade_journal_service.get_stats(chat_id, days=days)
+        await message.answer(
+            f"<b>Journal stats</b> (last {days}d)\n"
+            f"Trades: {st['trades']} | Wins: {st['wins']} | Win rate: {st['win_rate']}% | Total PnL: ${st['total_pnl']:+,.2f}"
+        )
+        return
+
+    if args[0] == "log" and len(args) >= 5:
+        symbol = (args[1] or "").upper()
+        side = (args[2] or "long").lower()
+        if side not in ("long", "short"):
+            side = "long"
+        try:
+            entry = float(args[3])
+            exit_price = float(args[4])
+        except (ValueError, IndexError):
+            await message.answer("Usage: /journal log SYMBOL long|short ENTRY EXIT [pnl]")
+            return
+        pnl = None
+        if len(args) >= 6:
+            try:
+                pnl = float(args[5])
+            except ValueError:
+                pass
+        entry_obj = await hub.trade_journal_service.log_trade(
+            chat_id, symbol=symbol, side=side, entry=entry, exit_price=exit_price, pnl_quote=pnl
+        )
+        if entry_obj:
+            await message.answer(f"Logged: <b>{symbol}</b> {side} {entry} → {exit_price}" + (f" (${pnl:+,.2f})" if pnl is not None else ""))
+        else:
+            await message.answer("Failed to log trade.")
+        return
+
+    await message.answer(
+        "Usage:\n"
+        "• <code>/journal list [N]</code> — last N entries (default 20)\n"
+        "• <code>/journal stats [days]</code>\n"
+        "• <code>/journal log SYMBOL long|short ENTRY EXIT [pnl]</code>"
+    )
+
+
+@router.message(Command("compare"))
+async def compare_cmd(message: Message) -> None:
+    flags = _settings.feature_flags_set()
+    if "multi_compare" not in flags:
+        await message.answer("Multi-symbol compare is disabled.")
+        return
+    hub = _require_hub()
+    text = (message.text or "").strip().split(maxsplit=1)[1] if len((message.text or "").strip().split()) > 1 else ""
+    symbols = [s.upper().lstrip("$") for s in (text or "BTC ETH SOL").strip().split() if s][:8]
+    if not symbols:
+        await message.answer("Usage: /compare BTC ETH SOL [SYMBOL...]")
+        return
+    try:
+        prices = await asyncio.gather(
+            *[hub.market_router.get_price(s) for s in symbols],
+            return_exceptions=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await message.answer(f"Could not fetch prices: {_safe_exc(exc)}")
+        return
+    lines = ["<b>Compare</b>", ""]
+    for sym, p in zip(symbols, prices):
+        if isinstance(p, Exception):
+            lines.append(f"<b>{sym}</b> — error")
+            continue
+        price = float((p or {}).get("price") or 0)
+        if price <= 0:
+            lines.append(f"<b>{sym}</b> — no data")
+        else:
+            lines.append(f"<b>{sym}</b> ${price:,.2f}")
+    await message.answer("\n".join(lines))
+
+
+@router.message(Command("report"))
+async def report_cmd(message: Message) -> None:
+    flags = _settings.feature_flags_set()
+    if "scheduled_report" not in flags:
+        await message.answer("Scheduled reports are disabled.")
+        return
+    hub = _require_hub()
+    svc = getattr(hub, "scheduled_report_service", None)
+    if not svc:
+        await message.answer("Scheduled reports not available.")
+        return
+    text = (message.text or "").strip().split(maxsplit=1)[1] if len((message.text or "").strip().split()) > 1 else ""
+    args = (text or "").strip().lower().split()
+    chat_id = message.chat.id
+
+    if not args or args[0] == "list":
+        reports = await svc.list_reports(chat_id)
+        if not reports:
+            await message.answer(
+                "No scheduled report. Subscribe: <code>/report on 9 0</code> (9:00 UTC daily)."
+            )
+            return
+        lines = ["<b>Scheduled reports</b>", ""]
+        for r in reports:
+            lines.append(
+                f"• {r['report_type']} @ {r['cron_hour_utc']:02d}:{r['cron_minute_utc']:02d} UTC"
+                + (f" ({r['timezone']})" if r.get("timezone") else "")
+            )
+        await message.answer("\n".join(lines))
+        return
+
+    if args[0] == "off" or args[0] == "unsubscribe":
+        ok = await svc.unsubscribe(chat_id)
+        await message.answer("Scheduled report turned off." if ok else "No subscription found.")
+        return
+
+    if args[0] in ("on", "subscribe") or args[0].isdigit():
+        hour_utc, minute_utc = 9, 0
+        if args[0].isdigit() and len(args) >= 2 and args[1].isdigit():
+            hour_utc = max(0, min(23, int(args[0])))
+            minute_utc = max(0, min(59, int(args[1])))
+        elif len(args) >= 3 and args[1].isdigit() and args[2].isdigit():
+            hour_utc = max(0, min(23, int(args[1])))
+            minute_utc = max(0, min(59, int(args[2])))
+        rec = await svc.subscribe(chat_id, report_type="market_summary", hour_utc=hour_utc, minute_utc=minute_utc)
+        if rec:
+            await message.answer(
+                f"Scheduled report on. You'll get a market summary daily at {rec.cron_hour_utc:02d}:{rec.cron_minute_utc:02d} UTC."
+            )
+        else:
+            await message.answer("Could not subscribe. Try /start first.")
+        return
+
+    await message.answer(
+        "Usage:\n"
+        "• <code>/report on [HOUR] [MINUTE]</code> — daily at HOUR:MINUTE UTC (default 9:00)\n"
+        "• <code>/report off</code> — unsubscribe\n"
+        "• <code>/report list</code>"
+    )
+
+
+@router.message(Command("export"))
+async def export_cmd(message: Message) -> None:
+    flags = _settings.feature_flags_set()
+    if "export" not in flags:
+        await message.answer("Export feature is disabled.")
+        return
+    hub = _require_hub()
+    text = (message.text or "").strip().split(maxsplit=1)[1] if len((message.text or "").strip().split()) > 1 else ""
+    kind = (text or "").strip().lower() or "alerts"
+    chat_id = message.chat.id
+
+    if kind == "alerts":
+        try:
+            alerts = await hub.alerts_service.list_alerts(chat_id)
+        except Exception:
+            await message.answer("Could not load alerts.")
+            return
+        if not alerts:
+            await message.answer("No alerts to export.")
+            return
+        lines = ["# Alerts export", ""]
+        for a in alerts:
+            lines.append(f"#{a.id} {a.symbol} {a.condition} {a.target_price} [{a.status}]")
+        body = "\n".join(lines)
+    elif kind == "journal":
+        if not getattr(hub, "trade_journal_service", None):
+            await message.answer("Journal not available.")
+            return
+        trades = await hub.trade_journal_service.list_trades(chat_id, limit=200)
+        if not trades:
+            await message.answer("No journal entries to export.")
+            return
+        lines = ["# Trade journal export", ""]
+        for t in trades:
+            line = f"#{t['id']} {t['symbol']} {t['side']} entry={t['entry']} exit={t['exit_price']}"
+            if t.get("pnl_quote") is not None:
+                line += f" pnl={t['pnl_quote']}"
+            lines.append(line)
+        body = "\n".join(lines)
+    else:
+        await message.answer("Usage: /export alerts | /export journal")
+        return
+
+    if len(body) <= 4000:
+        await message.answer(f"<pre>{body}</pre>")
+    else:
+        try:
+            await message.answer_document(
+                BufferedInputFile(body.encode("utf-8"), filename=f"ghost_export_{kind}.txt"),
+                caption=f"Export: {kind}",
+            )
+        except Exception:
+            await message.answer("Export too long; sending in parts.")
+            for i in range(0, len(body), 4000):
+                await message.answer(f"<pre>{body[i:i+4000]}</pre>")
+    return
 
 
 @router.message(Command("tradecheck"))
@@ -2553,6 +3167,133 @@ async def giveaway_cmd(message: Message) -> None:
     await message.answer("Pick giveaway action.", reply_markup=giveaway_menu(is_admin=hub.giveaway_service.is_admin(message.from_user.id)))
 
 
+@router.callback_query(F.data.startswith("followup:"))
+async def followup_callback(callback: CallbackQuery) -> None:
+    """Simplify, Example, Short, Go deeper — re-run LLM on last reply."""
+    if not await _acquire_callback_once(callback):
+        with suppress(Exception):
+            await callback.answer()
+        return
+    hub = _require_hub()
+    chat_id = callback.message.chat.id
+    data = (callback.data or "").strip()
+    action = data.replace("followup:", "", 1).lower()
+    last_reply = await hub.cache.get_json(f"llm:last_reply:{chat_id}")
+    last_user = await hub.cache.get_json(f"llm:last_user:{chat_id}")
+    if not last_reply or not isinstance(last_reply, str):
+        await callback.answer("No previous reply to refine.", show_alert=True)
+        return
+    instructions = {
+        "simplify": "Rewrite this in simpler, shorter form. Output only the simplified version.",
+        "example": "Add one concrete example to illustrate this. Keep the original and add the example.",
+        "short": "Give a one- or two-sentence version only.",
+        "deeper": "Expand with one more paragraph of detail or context. Keep the original summary first.",
+    }
+    instr = instructions.get(action, instructions["simplify"])
+    prompt = f"User originally asked: \"{last_user or ''}\". Your previous reply: \"{last_reply[:600]}\". {instr}"
+    try:
+        reply = await hub.llm_client.reply(prompt, history=[])
+        if reply and reply.strip():
+            await callback.message.edit_text(
+                _sanitize_llm_html(reply.strip())[:4000],
+                reply_markup=llm_reply_keyboard(),
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("feedback:"))
+async def feedback_callback(callback: CallbackQuery) -> None:
+    """Thumbs up/down; on down show reason and store for preferences."""
+    if not await _acquire_callback_once(callback):
+        with suppress(Exception):
+            await callback.answer()
+        return
+    hub = _require_hub()
+    chat_id = callback.message.chat.id
+    data = (callback.data or "").strip()
+    if data == "feedback:up":
+        await callback.answer("Thanks!")
+        return
+    if data == "feedback:down":
+        await callback.message.edit_reply_markup(reply_markup=feedback_reason_kb())
+        await callback.answer("What was wrong?")
+        return
+    if data.startswith("feedback:reason:"):
+        reason = data.replace("feedback:reason:", "", 1).lower()
+        try:
+            settings = await hub.user_service.get_settings(chat_id)
+            prefs = dict(settings.get("feedback_prefs") or {})
+            if reason == "long":
+                prefs["prefers_shorter"] = True
+                await hub.user_service.update_settings(chat_id, {"feedback_prefs": prefs})
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001
+            pass
+        msg = "Thanks — we'll keep it shorter next time." if reason == "long" else "Thanks for the feedback."
+        await callback.answer(msg, show_alert=True)
+        return
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("confirm:understood:"))
+async def confirm_understood_callback(callback: CallbackQuery) -> None:
+    """User confirmed or rejected the 'You want: X. Correct?' summary."""
+    if not await _acquire_callback_once(callback):
+        with suppress(Exception):
+            await callback.answer()
+        return
+    data = (callback.data or "").strip()
+    if data.endswith(":yes"):
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001
+            pass
+        await callback.answer("Got it.")
+        return
+    if data.endswith(":no"):
+        try:
+            await callback.message.edit_text(
+                "Rephrase what you want — I'll match it.",
+                reply_markup=None,
+            )
+        except Exception:  # noqa: BLE001
+            await callback.message.answer("Rephrase what you want — I'll match it.")
+        await callback.answer()
+        return
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("confirm:clear_alerts:"))
+async def confirm_clear_alerts_callback(callback: CallbackQuery) -> None:
+    if not await _acquire_callback_once(callback):
+        with suppress(Exception):
+            await callback.answer()
+        return
+    hub = _require_hub()
+    chat_id = callback.message.chat.id
+    data = (callback.data or "").strip()
+    suffix = data.replace("confirm:clear_alerts:", "", 1)
+    if suffix == "no":
+        try:
+            await callback.message.edit_text("Cancelled. Alerts unchanged.", reply_markup=None)
+        except Exception:
+            await callback.message.answer("Cancelled. Alerts unchanged.")
+        await callback.answer()
+        return
+    # suffix is count (e.g. "3") — clear all for this user
+    count = await hub.alerts_service.clear_user_alerts(chat_id)
+    try:
+        await callback.message.edit_text(f"Cleared {count} alerts.", reply_markup=None)
+    except Exception:
+        await callback.message.answer(f"Cleared {count} alerts.")
+    await callback.answer()
+
+
 @router.callback_query(F.data.startswith("cmd:"))
 async def command_menu_callback(callback: CallbackQuery) -> None:
     if not await _acquire_callback_once(callback):
@@ -2638,10 +3379,11 @@ async def command_menu_callback(callback: CallbackQuery) -> None:
     if action == "rsi":
         if len(parts) >= 3 and parts[2] == "custom":
             await _cmd_wizard_set(chat_id, {"step": "dispatch_text", "prefix": "rsi "})
-            await callback.message.answer("Send format: `1h oversold top 10 rsi14`.")
+            await callback.message.answer("Send format: <code>1h oversold top 10 rsi14</code>.")
             await callback.answer()
             return
         if len(parts) >= 6:
+            await callback.answer("Scanning…")
             _rsi_tf = parts[2]
             _rsi_mode = "overbought" if parts[3] == "overbought" else "oversold"
             _rsi_limit = max(1, min(_as_int(parts[4], 10), 20))
@@ -2659,10 +3401,7 @@ async def command_menu_callback(callback: CallbackQuery) -> None:
                     await callback.message.answer(rsi_scan_template(payload))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("rsi_scan_button_failed", extra={"event": "rsi_button_error", "error": str(exc)})
-                    await callback.message.answer("RSI scan hit an error — try again in a moment.")
-                with suppress(Exception):
-                    await callback.answer()
-
+                    await callback.message.answer("rsi scan hit an error — try again in a moment.")
             await _run_with_typing_lock(callback.bot, chat_id, _run_rsi)
             return
     if action == "ema":
@@ -2693,7 +3432,22 @@ async def command_menu_callback(callback: CallbackQuery) -> None:
             await _dispatch_with_typing("list my alerts")
             return
         if len(parts) >= 3 and parts[2] == "clear":
-            await _dispatch_with_typing("clear my alerts")
+            alerts = await hub.alerts_service.list_alerts(chat_id)
+            count = len(alerts)
+            if count == 0:
+                await callback.message.answer("No alerts to clear.")
+                await callback.answer()
+                return
+            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Yes, clear all", callback_data=f"confirm:clear_alerts:{count}")],
+                [InlineKeyboardButton(text="Cancel", callback_data="confirm:clear_alerts:no")],
+            ])
+            await callback.message.answer(
+                f"Clear all <b>{count}</b> alerts? This can't be undone.",
+                reply_markup=kb,
+            )
+            await callback.answer()
             return
         if len(parts) >= 3 and parts[2] == "pause":
             await _dispatch_with_typing("pause alerts")
@@ -2883,6 +3637,12 @@ async def settings_callbacks(callback: CallbackQuery) -> None:
     elif data == "settings:toggle:formal_mode":
         cur = await hub.user_service.get_settings(chat_id)
         new_settings = await hub.user_service.update_settings(chat_id, {"formal_mode": not cur.get("formal_mode", False)})
+    elif data == "settings:toggle:reply_in_dm":
+        cur = await hub.user_service.get_settings(chat_id)
+        new_settings = await hub.user_service.update_settings(chat_id, {"reply_in_dm": not cur.get("reply_in_dm", False)})
+    elif data == "settings:toggle:ultra_brief":
+        cur = await hub.user_service.get_settings(chat_id)
+        new_settings = await hub.user_service.update_settings(chat_id, {"ultra_brief": not cur.get("ultra_brief", False)})
     elif data.startswith("settings:set:"):
         _, _, key, value = data.split(":", 3)
         new_settings = await hub.user_service.update_settings(chat_id, {key: value})
@@ -2997,7 +3757,7 @@ async def refresh_callback(callback: CallbackQuery) -> None:
             settings=settings,
             chat_id=chat_id,
         )
-        await _send_ghost_analysis(callback.message, symbol, analysis_text)
+        await _send_ghost_analysis(callback.message, symbol, analysis_text, direction=payload.get("side"))
         await callback.answer("Refreshed")
 
     await _run_with_typing_lock(callback.bot, chat_id, _run)
@@ -3040,7 +3800,7 @@ async def details_callback(callback: CallbackQuery) -> None:
             chat_id=chat_id,
             detailed=True,
         )
-        await _send_ghost_analysis(callback.message, symbol, analysis_text)
+        await _send_ghost_analysis(callback.message, symbol, analysis_text, direction=payload.get("side"))
         await callback.answer("Detailed mode")
 
     await _run_with_typing_lock(callback.bot, chat_id, _run)
@@ -3124,6 +3884,9 @@ async def backtest_callback(callback: CallbackQuery) -> None:
         with suppress(Exception):
             await callback.answer()
         return
+    if "backtest" not in _settings.feature_flags_set():
+        await callback.answer("Backtest is disabled.", show_alert=True)
+        return
 
     symbol = (callback.data or "").split(":", 1)[1]
     await callback.message.answer(
@@ -3159,6 +3922,8 @@ async def quick_analysis_callback(callback: CallbackQuery) -> None:
             await callback.answer()
         return
 
+    with suppress(Exception):
+        await callback.answer("Analyzing…")
     chat_id = callback.message.chat.id
 
     async def _run() -> None:
@@ -3188,7 +3953,7 @@ async def quick_analysis_callback(callback: CallbackQuery) -> None:
             settings=settings,
             chat_id=chat_id,
         )
-        await _send_ghost_analysis(callback.message, symbol, analysis_text)
+        await _send_ghost_analysis(callback.message, symbol, analysis_text, direction=payload.get("side"))
         await callback.answer()
 
     await _run_with_typing_lock(callback.bot, chat_id, _run)
@@ -3201,6 +3966,8 @@ async def quick_analysis_tf_callback(callback: CallbackQuery) -> None:
             await callback.answer()
         return
 
+    with suppress(Exception):
+        await callback.answer("Analyzing…")
     chat_id = callback.message.chat.id
 
     async def _run() -> None:
@@ -3225,7 +3992,7 @@ async def quick_analysis_tf_callback(callback: CallbackQuery) -> None:
             settings=settings,
             chat_id=chat_id,
         )
-        await _send_ghost_analysis(callback.message, symbol.upper(), analysis_text)
+        await _send_ghost_analysis(callback.message, symbol.upper(), analysis_text, direction=payload.get("side"))
         await callback.answer()
 
     await _run_with_typing_lock(callback.bot, chat_id, _run)
@@ -3499,23 +4266,29 @@ async def route_text(message: Message) -> None:
         return
 
     if not await _check_req_limit(chat_id):
-        await message.answer("slow down fren — rate limit hit. give it a minute.")
+        await message.answer(
+            "slow down fren — rate limit hit. resets in ~1 min.",
+            reply_to_message_id=message.message_id,
+        )
         return
 
     # Fast-path: pure greetings — respond immediately without LLM or market data.
     if _GREETING_RE.match(raw_text.strip()):
         low = raw_text.strip().lower()
+        rid = message.message_id
         if low.startswith("gn") or "night" in low:
-            await message.answer(random.choice(_GN_REPLIES))
+            await message.answer(random.choice(_GN_REPLIES), reply_to_message_id=rid)
         else:
-            await message.answer(random.choice(_GM_REPLIES))
+            name = message.from_user.first_name if message.from_user else "fren"
+            reply = await _market_aware_gm_reply(hub, name)
+            await message.answer(reply, reply_to_message_id=rid)
         return
 
     lock = _chat_lock(chat_id)
     if lock.locked():
         # Avoid flooding busy notices if user sends many messages quickly.
         if await hub.cache.set_if_absent(f"busy_notice:{chat_id}", ttl=5):
-            await message.answer("still on it fren — give me a few seconds.")
+            await message.answer("still on it fren — give me a few seconds.", reply_to_message_id=message.message_id)
         return
 
     start_ts = datetime.now(timezone.utc)
@@ -3620,7 +4393,8 @@ async def route_text(message: Message) -> None:
                         symbol=data["symbol"],
                         context="trade check",
                     )
-                    await message.answer(trade_verification_template(result))
+                    _wiz_settings = await hub.user_service.get_settings(chat_id)
+                    await message.answer(trade_verification_template(result, _wiz_settings))
                     await _wizard_clear(chat_id)
                     return
 
@@ -3640,13 +4414,45 @@ async def route_text(message: Message) -> None:
                         context="alert",
                     )
                     await message.answer(
-                        f"alert set for <b>{pending_alert_symbol}</b> at <b>{target}</b>. "
-                        "i'll ping you when we hit it. don't get liquidated"
+                        f"🔔 alert set — <b>{pending_alert_symbol}</b> crosses <b>${target:,.2f}</b>.\n"
+                        "i'll ping you the moment it hits. don't get liquidated.",
+                        reply_markup=alert_created_menu(pending_alert_symbol),
                     )
                     return
 
             settings = await hub.user_service.get_settings(chat_id)
+            if not settings.get("disclaimer_seen"):
+                await message.answer(
+                    "⚠️ <b>Disclaimer</b>: This bot is for info only, not financial advice. "
+                    "Data may be delayed. Trade at your own risk."
+                )
+                await hub.user_service.update_settings(chat_id, {"disclaimer_seen": True})
+
             text_lower = text.lower().strip()
+
+            # Repair: user says that's not what I meant / wrong / I meant — restate and retry
+            _repair_re = re.compile(
+                r"\b(that'?s not what i meant|no(pe)?\s*(that'?s wrong|that'?s not it)|wrong|i meant|i wanted|not that|something else)\b",
+                re.IGNORECASE,
+            )
+            if _repair_re.search(text_lower) and hub.llm_client:
+                history = await _get_chat_history(chat_id)
+                if len(history) >= 2:
+                    last_user = next((h["content"] for h in reversed(history) if h.get("role") == "user"), "")
+                    last_assistant = next((h["content"] for h in reversed(history) if h.get("role") == "assistant"), "")
+                    repair_prompt = (
+                        f"The user just said: \"{text[:200]}\". "
+                        f"Your previous reply was: \"{last_assistant[:400]}\". "
+                        f"Their previous message was: \"{last_user[:200]}\". "
+                        "Restate in one short line what they likely want, then answer that. Be brief."
+                    )
+                    try:
+                        repair_reply = await hub.llm_client.reply(repair_prompt, history=history[-6:])
+                        if repair_reply and repair_reply.strip():
+                            await _send_llm_reply(message, repair_reply.strip(), settings, user_message=text, add_quick_replies=True)
+                            return
+                    except Exception:  # noqa: BLE001
+                        pass
 
             # Special Ghost Easter eggs / overrides
             if "define trading" in text_lower or ("define" in text_lower and len(text_lower.split()) <= 3):
@@ -3689,9 +4495,9 @@ async def route_text(message: Message) -> None:
             if hub.llm_client and chat_mode == "chat_only":
                 llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
-                    await _send_llm_reply(message, llm_reply)
+                    await _send_llm_reply(message, llm_reply, settings, user_message=text)
                     return
-                await message.answer("signal unclear fren — try rephrasing or drop a ticker.")
+                await message.answer("signal unclear fren — try rephrasing or drop a ticker.", reply_to_message_id=message.message_id)
                 return
 
             if hub.llm_client and chat_mode == "llm_first":
@@ -3704,7 +4510,7 @@ async def route_text(message: Message) -> None:
                         pass
                 llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
-                    await _send_llm_reply(message, llm_reply)
+                    await _send_llm_reply(message, llm_reply, settings, user_message=text)
                     return
 
             if chat_mode in {"hybrid", "tool_first"} and (parsed.intent == Intent.UNKNOWN or (parsed.requires_followup and parsed.intent == Intent.UNKNOWN)):
@@ -3720,7 +4526,7 @@ async def route_text(message: Message) -> None:
                 if parsed.intent == Intent.UNKNOWN:
                     llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                     if llm_reply:
-                        await _send_llm_reply(message, llm_reply)
+                        await _send_llm_reply(message, llm_reply, settings, user_message=text)
                         return
                     english_phrase = is_likely_english_phrase(text)
                     symbol_hint = None if english_phrase else _extract_action_symbol_hint(text)
@@ -3728,9 +4534,14 @@ async def route_text(message: Message) -> None:
                         await message.answer(
                             f"pick an action for <b>{symbol_hint}</b>:",
                             reply_markup=smart_action_menu(symbol_hint),
+                            reply_to_message_id=message.message_id,
                         )
                     else:
-                        await message.answer(unknown_prompt(), reply_markup=smart_action_menu(None))
+                        await message.answer(
+                            clarifying_question(None),
+                            reply_markup=smart_action_menu(None),
+                            reply_to_message_id=message.message_id,
+                        )
                     return
                 if parsed.intent == Intent.ANALYSIS and not parsed.entities.get("symbol"):
                     kb = simple_followup(
@@ -3742,7 +4553,10 @@ async def route_text(message: Message) -> None:
                     )
                     await message.answer(parsed.followup_question or "Need one detail.", reply_markup=kb)
                     return
-                await message.answer(parsed.followup_question or unknown_prompt())
+                await message.answer(
+                    parsed.followup_question or clarifying_question(None),
+                    reply_to_message_id=message.message_id,
+                )
                 return
 
             try:
@@ -3750,12 +4564,13 @@ async def route_text(message: Message) -> None:
                     return
                 llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
-                    await _send_llm_reply(message, llm_reply)
+                    await _send_llm_reply(message, llm_reply, settings, user_message=text)
                     return
                 symbol_hint = _extract_action_symbol_hint(text)
                 await message.answer(
-                    parsed.followup_question or unknown_prompt(),
+                    parsed.followup_question or clarifying_question(symbol_hint),
                     reply_markup=smart_action_menu(symbol_hint) if symbol_hint else None,
+                    reply_to_message_id=message.message_id,
                 )
                 return
             except Exception as exc:  # noqa: BLE001
@@ -3771,7 +4586,10 @@ async def route_text(message: Message) -> None:
             extra={"event": "route_text_unhandled_error", "chat_id": chat_id},
         )
         with suppress(Exception):
-            await message.answer(f"something broke on my end. try again in a sec. (<i>{_safe_exc(exc)}</i>)")
+            await message.answer(
+                f"something broke on my end. try again in a sec. (<i>{_safe_exc(exc)}</i>)",
+                reply_to_message_id=message.message_id,
+            )
     finally:
         stop.set()
         typing_task.cancel()

@@ -50,7 +50,70 @@ def settings_menu(settings: dict) -> InlineKeyboardMarkup:
     for tone in ("wild", "standard"):
         kb.button(text=f"Tone: {tone}", callback_data=f"settings:set:tone_mode:{tone}")
 
-    kb.adjust(2, 3, 3, 3, 2)
+    reply_dm = "ON" if settings.get("reply_in_dm") else "OFF"
+    ultra = "ON" if settings.get("ultra_brief") else "OFF"
+    kb.button(text=f"Reply in DM: {reply_dm}", callback_data="settings:toggle:reply_in_dm")
+    kb.button(text=f"Ultra brief: {ultra}", callback_data="settings:toggle:ultra_brief")
+
+    for tz in ("UTC", "America/New_York", "Europe/London", "Asia/Tokyo"):
+        kb.button(text=f"TZ: {tz.split('/')[-1]}", callback_data=f"settings:set:timezone:{tz}")
+
+    for style in ("short", "detailed", "friendly", "formal"):
+        kb.button(text=f"Style: {style}", callback_data=f"settings:set:communication_style:{style}")
+
+    kb.adjust(2, 3, 3, 3, 2, 2, 4, 4)
+    return kb.as_markup()
+
+
+def llm_reply_keyboard() -> InlineKeyboardMarkup:
+    """Quick replies + feedback for LLM answers."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Simplify", callback_data="followup:simplify")
+    kb.button(text="Example", callback_data="followup:example")
+    kb.button(text="Short", callback_data="followup:short")
+    kb.button(text="Go deeper", callback_data="followup:deeper")
+    kb.button(text="👍", callback_data="feedback:up")
+    kb.button(text="👎", callback_data="feedback:down")
+    kb.adjust(4, 2)
+    return kb.as_markup()
+
+
+def llm_quick_reply_buttons() -> InlineKeyboardMarkup:
+    """Simplify, Example, Short, Go deeper — attached after LLM replies."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Simplify", callback_data="followup:simplify")
+    kb.button(text="Example", callback_data="followup:example")
+    kb.button(text="Short answer", callback_data="followup:short")
+    kb.button(text="Go deeper", callback_data="followup:deeper")
+    kb.adjust(2, 2)
+    return kb.as_markup()
+
+
+def feedback_buttons() -> InlineKeyboardMarkup:
+    """Thumbs up/down for feedback on bot reply."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="👍", callback_data="feedback:up")
+    kb.button(text="👎", callback_data="feedback:down")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+def confirm_understanding_kb() -> InlineKeyboardMarkup:
+    """After 'You want X, Y, Z. Correct?'"""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Yes", callback_data="confirm:understood:yes")
+    kb.button(text="No, rephrase", callback_data="confirm:understood:no")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+def feedback_reason_kb() -> InlineKeyboardMarkup:
+    """After thumbs down: why?"""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Too long", callback_data="feedback:reason:long")
+    kb.button(text="Wrong info", callback_data="feedback:reason:wrong")
+    kb.button(text="Other", callback_data="feedback:reason:other")
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -255,4 +318,36 @@ def giveaway_winners_menu(duration_seconds: int) -> InlineKeyboardMarkup:
     for winners in (1, 2, 3):
         kb.button(text=f"{winners} winner", callback_data=f"gw:win:{duration_seconds}:{winners}")
     kb.adjust(3)
+    return kb.as_markup()
+
+
+def analysis_progressive_menu(symbol: str, direction: str | None = None) -> InlineKeyboardMarkup:
+    """Context-aware follow-up buttons shown right after an analysis reply (inspired by full action set)."""
+    sym = symbol.upper()
+    direction = (direction or "").strip().lower()
+    kb = InlineKeyboardBuilder()
+    if direction in {"long", "short"}:
+        kb.button(text="Set Entry Alert", callback_data=f"set_alert:{sym}")
+        kb.button(text="Size This Trade", callback_data="cmd:setup:freeform")
+    else:
+        kb.button(text="Set Alert", callback_data=f"set_alert:{sym}")
+        kb.button(text="Size Trade", callback_data="cmd:setup:freeform")
+    kb.button(text="Show levels", callback_data=f"show_levels:{sym}")
+    kb.button(text="Why?", callback_data=f"why:{sym}")
+    kb.button(text="Refresh", callback_data=f"refresh:{sym}")
+    kb.button(text="More detail", callback_data=f"details:{sym}")
+    kb.button(text="Derivatives", callback_data=f"derivatives:{sym}")
+    kb.button(text="News", callback_data=f"catalysts:{sym}")
+    kb.button(text="Backtest this", callback_data=f"backtest:{sym}")
+    kb.adjust(2, 2, 2, 2)
+    return kb.as_markup()
+
+
+def alert_created_menu(symbol: str) -> InlineKeyboardMarkup:
+    """Shown after an alert is successfully created — offers quick next steps."""
+    sym = symbol.upper()
+    kb = InlineKeyboardBuilder()
+    kb.button(text="My Alerts", callback_data="cmd:alert:list")
+    kb.button(text=f"Analyze {sym}", callback_data=f"quick:analysis_tf:{sym}:1h")
+    kb.adjust(2)
     return kb.as_markup()

@@ -104,26 +104,29 @@ class MarketContextService:
     async def get_market_context(self) -> dict:
         """
         Fetch quick market overview:
-        - BTC price + 1h/4h trend + volume ratio
-        - ETH price + trend
+        - BTC, ETH, SOL price + 1h/4h trend + volume ratio
         - BTC dominance
         - Overall sentiment (derived from BTC RSI)
         Returns a dict to be injected into analysis prompts.
         """
         btc_task = self._symbol_snapshot("BTC")
         eth_task = self._symbol_snapshot("ETH")
+        sol_task = self._symbol_snapshot("SOL")
         dom_task = self._btc_dominance()
 
-        btc: dict = {}
-        eth: dict = {}
+        btc = {}
+        eth = {}
+        sol = {}
         dominance = None
-        results = await asyncio.gather(btc_task, eth_task, dom_task, return_exceptions=True)
+        results = await asyncio.gather(btc_task, eth_task, sol_task, dom_task, return_exceptions=True)
         if not isinstance(results[0], Exception):
             btc = results[0]
         if not isinstance(results[1], Exception):
             eth = results[1]
         if not isinstance(results[2], Exception):
-            dominance = results[2]
+            sol = results[2]
+        if not isinstance(results[3], Exception):
+            dominance = results[3]
 
         btc_price = _safe_float(btc.get("price"), 0.0) or 0.0
         eth_price = _safe_float(eth.get("price"), 0.0) or 0.0
@@ -133,6 +136,7 @@ class MarketContextService:
         return {
             "btc": btc,
             "eth": eth,
+            "sol": sol,
             "btc_dominance": dominance,
             "eth_btc_ratio": eth_btc_ratio,
             "sentiment": sentiment,
@@ -140,14 +144,17 @@ class MarketContextService:
 
 
 def format_market_context(context: dict) -> str:
-    btc = context.get("btc", {}) if isinstance(context, dict) else {}
-    eth = context.get("eth", {}) if isinstance(context, dict) else {}
-    dom = _safe_float((context or {}).get("btc_dominance"), None)
-    ratio = _safe_float((context or {}).get("eth_btc_ratio"), None)
-    sentiment = str((context or {}).get("sentiment") or "neutral")
+    ctx = context or {}
+    btc = ctx.get("btc", {}) if isinstance(ctx.get("btc"), dict) else {}
+    eth = ctx.get("eth", {}) if isinstance(ctx.get("eth"), dict) else {}
+    sol = ctx.get("sol", {}) if isinstance(ctx.get("sol"), dict) else {}
+    dom = _safe_float(ctx.get("btc_dominance"), None)
+    ratio = _safe_float(ctx.get("eth_btc_ratio"), None)
+    sentiment = str(ctx.get("sentiment") or "neutral")
 
     btc_price = _safe_float(btc.get("price"), 0.0) or 0.0
     eth_price = _safe_float(eth.get("price"), 0.0) or 0.0
+    sol_price = _safe_float(sol.get("price"), 0.0) or 0.0
     vol_ratio = _safe_float(btc.get("volume_ratio_1h"), None)
     btc_rsi_4h = _safe_float(btc.get("rsi_4h"), None)
 
@@ -159,6 +166,8 @@ def format_market_context(context: dict) -> str:
         ),
         f"ETH ${eth_price:,.2f}, 1h {eth.get('trend_1h', 'unknown')}, 4h {eth.get('trend_4h', 'unknown')}",
     ]
+    if sol_price > 0:
+        bits.append(f"SOL ${sol_price:,.2f}, 1h {sol.get('trend_1h', 'unknown')}, 4h {sol.get('trend_4h', 'unknown')}")
     if dom is not None:
         bits.append(f"BTC.D {dom:.2f}%")
     if ratio is not None:

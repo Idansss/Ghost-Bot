@@ -223,7 +223,7 @@ class EMAScannerService:
             "ema_length": ema_len,
             "mode": mode_norm,
             "items": items,
-            "source_line": "Data source: precomputed multi-exchange snapshots | Updated: just now",
+            "source_line": "Multi-exchange snapshots",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         for row in items:

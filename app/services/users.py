@@ -17,6 +17,15 @@ DEFAULT_SETTINGS = {
     "anon_mode": True,
     "profanity_level": "light",
     "formal_mode": False,
+    "timezone": "UTC",
+    "reply_in_dm": False,
+    "disclaimer_seen": False,
+    "ultra_brief": False,
+    "communication_style": "friendly",  # short | detailed | friendly | formal
+    "display_name": "",
+    "trading_goals": "",
+    "last_symbols": [],  # last 5 symbols user asked about
+    "feedback_prefs": {},  # e.g. prefers_shorter after thumbs down "too long"
 }
 
 

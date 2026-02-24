@@ -35,6 +35,25 @@ WILD_CLOSERS = [
     "if it doesn't set up clean, skip it. there's always another trade.",
 ]
 
+_LONG_CLOSERS = [
+    "partial out at tp1 and let the rest run — don't give it all back.",
+    "stop is non-negotiable. don't move it down.",
+    "if btc loses the daily ema, your long thesis is over. reassess.",
+    "size it correctly. the best setup means nothing overleveraged.",
+]
+
+_SHORT_CLOSERS = [
+    "stop is above the wick — not above your feelings.",
+    "shorts live and die by timing. if it doesn't reject cleanly, flat is a position.",
+    "don't chase the short. wait for confirmation or you're just guessing.",
+    "cover at least half at tp1. shorts can snap back hard.",
+]
+
+_THIN_RR_CLOSERS = [
+    "r/r is tight on this. size it small or tighten the entry before you click.",
+    "marginal r/r — only take it if the setup is textbook clean.",
+]
+
 STANDARD_CLOSERS = [
     "send the next chart if you want a second read.",
     "set the alert and let the market come to you.",
@@ -46,6 +65,8 @@ UNKNOWN_FOLLOWUPS = [
     "Give me a clear target: <code>SOL long</code>, <code>cpi news</code>, <code>chart BTC 1h</code>, or <code>alert me when BTC hits 70000</code>.",
     "I can route free text. Try <code>ETH short 4h</code>, <code>rsi top 10 1h oversold</code>, or <code>list my alerts</code>.",
     "Send the intent directly: <code>coins to watch 5</code>, <code>openai updates</code>, or <code>scan solana &lt;address&gt;</code>.",
+    "Short question? I'll keep it brief. Need a full read? Send a ticker or <code>BTC 4h</code>.",
+    "Not sure what you need — try <code>BTC long</code>, <code>latest news</code>, or <code>coins to watch</code>. I'll match the depth of your ask.",
 ]
 
 
@@ -62,6 +83,42 @@ def _tone_mode(settings: dict) -> str:
 
 def _pick(options: list[str]) -> str:
     return random.choice(options)
+
+
+def _contextual_closer(direction: str, rr_first: float, tone: str) -> str:
+    """Pick a closer that matches the trade direction and R/R quality."""
+    if tone not in {"wild", "standard"}:
+        return ""
+    if tone == "standard":
+        return _pick(STANDARD_CLOSERS)
+    direction = (direction or "").strip().lower()
+    pool: list[str]
+    if direction == "short":
+        pool = list(_SHORT_CLOSERS)
+        if rr_first < 1.5:
+            pool.extend(_THIN_RR_CLOSERS)
+    elif direction == "long":
+        pool = list(_LONG_CLOSERS)
+        if rr_first < 1.5:
+            pool.extend(_THIN_RR_CLOSERS)
+        elif rr_first >= 2.5:
+            pool.append("clean r/r on this long — let it breathe and don't cut early.")
+    else:
+        pool = list(WILD_CLOSERS)
+    return _pick(pool)
+
+
+def market_condition_warning(*, is_weekend: bool, btc_vol_pct: float | None = None) -> str | None:
+    """Return a one-line warning string if market conditions are notable, else None."""
+    parts: list[str] = []
+    if is_weekend:
+        parts.append("weekend session — liquidity is thin, spreads are wide, wicks are random. size accordingly.")
+    if btc_vol_pct is not None and abs(btc_vol_pct) >= 4.0:
+        direction = "pumping" if btc_vol_pct > 0 else "dumping"
+        parts.append(f"btc is {direction} hard ({btc_vol_pct:+.1f}%) — alts will follow or won't. confirm before trading.")
+    if not parts:
+        return None
+    return "⚠ " + " ".join(parts)
 
 
 def _render_summary(summary: str, settings: dict) -> str:
@@ -148,6 +205,10 @@ def trade_plan_template(plan: dict, settings: dict, detailed: bool = False) -> s
             lines += ["", f"<i>{relative_updated(updated) or updated}</i>"]
 
     lines += ["", f"<i>{safe_html(plan.get('risk', 'Stay nimble and cut it if structure breaks.'))}</i>"]
+    tone = _tone_mode(settings)
+    closer = _contextual_closer(side, rr_first=0.0, tone=tone)
+    if closer:
+        lines.append(closer)
     return "\n".join(lines)
 
 
@@ -241,28 +302,42 @@ def wallet_scan_template(payload: dict) -> str:
     return "\n".join(lines)
 
 
-def cycle_template(payload: dict) -> str:
+def cycle_template(payload: dict, settings: dict | None = None) -> str:
+    tone = _tone_mode(settings or {})
     summary = safe_html(payload.get("summary", ""))
     confidence = payload.get("confidence", 0)
-    lines = [
-        "<b>Cycle Check</b>",
-        "",
-        summary,
-        f"<i>Confidence: {confidence:.0%}</i>",
-        "",
-    ]
+    if tone == "wild":
+        header = "<b>Cycle Check</b>"
+        conf_line = f"<i>conviction: {confidence:.0%}</i>"
+    elif tone == "standard":
+        header = "<b>Market Cycle Analysis</b>"
+        conf_line = f"<i>Confidence: {confidence:.0%}</i>"
+    else:
+        header = "<b>Market Cycle Analysis</b>"
+        conf_line = f"Confidence: {confidence:.0%}"
+    lines = [header, "", summary, conf_line, ""]
     for b in payload.get("bullets", []):
         lines.append(f"— {safe_html(b)}")
+    if tone == "wild":
+        lines += ["", "<i>cycles repeat but timing is never identical. use as context, not as a signal.</i>"]
     return "\n".join(lines)
 
 
-def trade_verification_template(payload: dict) -> str:
+def trade_verification_template(payload: dict, settings: dict | None = None) -> str:
+    tone = _tone_mode(settings or {})
     symbol = safe_html(str(payload.get("symbol", "")))
     if payload.get("result") == "not_filled":
+        note_line = safe_html(payload.get("note", ""))
+        if tone == "wild":
+            return (
+                f"<b>Trade Check · {symbol}</b>\n\n"
+                f"result: <b>not filled</b> — entry never triggered.\n"
+                f"{note_line}"
+            )
         return (
             f"<b>Trade Check · {symbol}</b>\n\n"
             f"Result: <b>not filled</b>\n"
-            f"{safe_html(payload.get('note', ''))}"
+            f"{note_line}"
         )
 
     direction = safe_html(str(payload.get("direction", "")))
@@ -279,14 +354,33 @@ def trade_verification_template(payload: dict) -> str:
         f"MAE:         {safe_html(str(payload.get('mae', 'n/a')))}",
         f"R multiple:  {safe_html(str(payload.get('r_multiple', 'n/a')))}",
     ]
+    if tone == "wild":
+        r_mult = payload.get("r_multiple")
+        if r_mult is not None:
+            try:
+                r_float = float(str(r_mult).replace("R", "").strip())
+                if r_float >= 2.0:
+                    lines += ["", "<i>clean exit. that's how you build an account.</i>"]
+                elif r_float >= 1.0:
+                    lines += ["", "<i>took profit. that's the job.</i>"]
+                elif r_float < 0:
+                    lines += ["", "<i>it happens. review the entry, not just the result.</i>"]
+            except (TypeError, ValueError):
+                pass
     return "\n".join(lines)
 
 
-def correlation_template(payload: dict) -> str:
+def correlation_template(payload: dict, settings: dict | None = None) -> str:
+    tone = _tone_mode(settings or {})
     summary = safe_html(payload.get("summary", ""))
-    lines = ["<b>Correlation</b>", "", summary, ""]
+    header = "<b>Correlation</b>" if tone == "wild" else "<b>Correlation Analysis</b>"
+    lines = [header, "", summary, ""]
     for b in payload.get("bullets", []):
         lines.append(f"— {safe_html(b)}")
+    if tone == "wild":
+        lines += ["", "<i>correlation isn't causation. watch structure, not just the line.</i>"]
+    elif tone == "standard":
+        lines += ["", "<i>Use as context alongside your own analysis.</i>"]
     return "\n".join(lines)
 
 
@@ -294,6 +388,10 @@ def rsi_scan_template(payload: dict) -> str:
     tf = safe_html(str(payload.get("timeframe", "")))
     rsi_len = safe_html(str(payload.get("rsi_length", 14)))
     summary = safe_html(payload.get("summary", ""))
+    # Never show "precomputed" or similar to the user
+    for phrase in ("[precomputed]", "(precomputed)", "precomputed", "[live]", "pre-computed"):
+        summary = summary.replace(phrase, "").strip()
+    summary = summary.strip()
 
     items = payload.get("items", [])
     if not items:
@@ -486,10 +584,9 @@ def setup_review_template(payload: dict, settings: dict) -> str:
 
     lines += ["", "<i>use as a risk-planning map — execute only if structure still holds</i>"]
 
-    if tone == "wild":
-        lines.append(_pick(WILD_CLOSERS))
-    elif tone == "standard":
-        lines.append(_pick(STANDARD_CLOSERS))
+    closer = _contextual_closer(direction, rr_first=rr_first, tone=tone)
+    if closer:
+        lines.append(closer)
     return "\n".join(lines)
 
 
@@ -632,8 +729,16 @@ def help_text() -> str:
         "<code>/scan &lt;chain&gt; &lt;address&gt;</code>",
         "<code>/tradecheck  /cycle</code>",
         "<code>/giveaway  /join</code>",
+        "<code>/position ...</code> — track positions & unrealized PnL",
+        "<code>/journal ...</code> — log trades, stats, export",
+        "<code>/compare BTC ETH SOL</code> — quick price compare",
+        "<code>/report on [HOUR] [MINUTE]</code> — daily market summary",
+        "<code>/export alerts|journal</code>",
         "",
-        "<i>Tip: free-talk works — commands are optional.</i>",
+        "<b>How Ghost thinks about trading</b>",
+        "Market structure, levels/zones, risk management, psychology, volatility/regimes, execution, top-down timeframes, trade planning, journaling & review, backtesting/forward testing, fundamentals & catalysts, on-chain & liquidity/flow, correlations, and basic security/ops.",
+        "",
+        "<i>Tip: free-talk works — commands are optional. Short question → short answer; send a ticker for a full read.</i>",
     ]
     return "\n".join(lines)
 
@@ -652,6 +757,12 @@ def settings_text(settings: dict) -> str:
         f"anon_mode:             {safe_html(str(settings.get('anon_mode', '')))}",
         f"profanity_level:       {safe_html(str(settings.get('profanity_level', '')))}",
         f"formal_mode:           {safe_html(str(settings.get('formal_mode', '')))}",
+        f"timezone:              {safe_html(str(settings.get('timezone', 'UTC')))}",
+        f"reply_in_dm:           {safe_html(str(settings.get('reply_in_dm', False)))}",
+        f"ultra_brief:           {safe_html(str(settings.get('ultra_brief', False)))}",
+        f"communication_style:   {safe_html(str(settings.get('communication_style', 'friendly')))}",
+        f"display_name:          {safe_html(str(settings.get('display_name') or ''))}",
+        f"trading_goals:         {safe_html(str(settings.get('trading_goals') or '')[:80])}",
     ]
     return "\n".join(lines)
 
@@ -667,3 +778,10 @@ def smalltalk_reply(settings: dict) -> str:
 
 def unknown_prompt() -> str:
     return random.choice(UNKNOWN_FOLLOWUPS)
+
+
+def clarifying_question(symbol_hint: str | None = None) -> str:
+    """One clarifying question when intent is unclear; avoids guessing."""
+    if symbol_hint:
+        return f"Not sure what you need for <b>{symbol_hint}</b> — analysis, chart, or alert? Pick one or say which."
+    return "What do you want — analysis (send a ticker), chart, alert, or news? One is enough."

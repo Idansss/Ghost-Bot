@@ -20,7 +20,7 @@ def test_rsi_high_on_uptrend() -> None:
 
 def test_macd_positive_on_uptrend() -> None:
     s = pd.Series(np.linspace(10, 200, 150))
-    m_line, m_signal = macd(s)
+    m_line, m_signal, m_hist = macd(s)
     assert m_line.iloc[-1] > 0
     assert m_line.iloc[-1] >= m_signal.iloc[-1]
 
