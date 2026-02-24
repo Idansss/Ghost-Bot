@@ -108,11 +108,12 @@ def confirm_understanding_kb() -> InlineKeyboardMarkup:
 
 
 def feedback_reason_kb() -> InlineKeyboardMarkup:
-    """After thumbs down: why?"""
+    """After thumbs down: why? + option to type improvement."""
     kb = InlineKeyboardBuilder()
     kb.button(text="Too long", callback_data="feedback:reason:long")
     kb.button(text="Wrong info", callback_data="feedback:reason:wrong")
     kb.button(text="Other", callback_data="feedback:reason:other")
+    kb.button(text="✏️ Suggest improvement", callback_data="feedback:suggest")
     kb.adjust(1)
     return kb.as_markup()
 

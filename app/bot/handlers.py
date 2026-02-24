@@ -3218,16 +3218,75 @@ async def followup_callback(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+async def _get_pending_feedback_suggestion(chat_id: int) -> dict | None:
+    hub = _require_hub()
+    return await hub.cache.get_json(f"feedback:pending_suggestion:{chat_id}")
+
+
+async def _set_pending_feedback_suggestion(chat_id: int, payload: dict, ttl: int = 300) -> None:
+    hub = _require_hub()
+    await hub.cache.set_json(f"feedback:pending_suggestion:{chat_id}", payload, ttl=ttl)
+
+
+async def _clear_pending_feedback_suggestion(chat_id: int) -> None:
+    hub = _require_hub()
+    with suppress(Exception):
+        await hub.cache.delete(f"feedback:pending_suggestion:{chat_id}")
+
+
+async def _notify_admins_negative_feedback(
+    *,
+    from_chat_id: int,
+    from_username: str | None,
+    reason: str,
+    reply_preview: str,
+    improvement_text: str | None = None,
+) -> None:
+    """Send negative feedback (and optional improvement text) to all admin chat IDs."""
+    admin_ids = _settings.admin_ids_list()
+    if not admin_ids:
+        return
+    username = from_username or "—"
+    preview = (reply_preview or "")[:400].replace("<", " ").replace(">", " ")
+    lines = [
+        "👎 <b>Negative feedback</b>",
+        f"From: {username} (chat_id <code>{from_chat_id}</code>)",
+        f"Reason: {reason}",
+        "",
+        f"Bot reply (preview): {preview}",
+    ]
+    if improvement_text and improvement_text.strip():
+        lines.extend(["", "📝 <b>Improvement suggestion:</b>", improvement_text.strip()[:1000]])
+    text = "\n".join(lines)
+    hub = _require_hub()
+    for admin_id in admin_ids:
+        try:
+            await hub.telegram_bot.send_message(admin_id, text, parse_mode="HTML")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 @router.callback_query(F.data.startswith("feedback:"))
 async def feedback_callback(callback: CallbackQuery) -> None:
-    """Thumbs up/down; on down show reason and store for preferences."""
+    """Thumbs up/down; on down show reason, notify admin, optionally collect improvement text."""
     if not await _acquire_callback_once(callback):
         with suppress(Exception):
             await callback.answer()
         return
     hub = _require_hub()
     chat_id = callback.message.chat.id
+    from_username = getattr(callback.from_user, "username", None) or getattr(callback.from_user, "first_name", None) or ""
     data = (callback.data or "").strip()
+
+    async def _reply_preview() -> str:
+        if callback.message.text:
+            return (callback.message.text or "")[:500]
+        try:
+            last = await hub.cache.get_json(f"llm:last_reply:{chat_id}")
+            return (last or "")[:500] if isinstance(last, str) else str(last or "")[:500]
+        except Exception:  # noqa: BLE001
+            return ""
+
     if data == "feedback:up":
         await callback.answer("Thanks!")
         return
@@ -3235,8 +3294,21 @@ async def feedback_callback(callback: CallbackQuery) -> None:
         await callback.message.edit_reply_markup(reply_markup=feedback_reason_kb())
         await callback.answer("What was wrong?")
         return
+    if data == "feedback:suggest":
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:  # noqa: BLE001
+            pass
+        await _set_pending_feedback_suggestion(
+            chat_id,
+            {"reason": "suggestion", "reply_preview": await _reply_preview(), "message_id": callback.message.message_id},
+        )
+        await callback.answer()
+        await callback.message.answer("Type what we can do to improve in the chat — I'll pass it on personally.")
+        return
     if data.startswith("feedback:reason:"):
         reason = data.replace("feedback:reason:", "", 1).lower()
+        reply_preview = await _reply_preview()
         try:
             settings = await hub.user_service.get_settings(chat_id)
             prefs = dict(settings.get("feedback_prefs") or {})
@@ -3249,8 +3321,19 @@ async def feedback_callback(callback: CallbackQuery) -> None:
             await callback.message.edit_reply_markup(reply_markup=None)
         except Exception:  # noqa: BLE001
             pass
+        await _notify_admins_negative_feedback(
+            from_chat_id=chat_id,
+            from_username=from_username,
+            reason=reason,
+            reply_preview=reply_preview,
+        )
+        await _set_pending_feedback_suggestion(
+            chat_id,
+            {"reason": reason, "reply_preview": reply_preview, "message_id": callback.message.message_id},
+        )
         msg = "Thanks — we'll keep it shorter next time." if reason == "long" else "Thanks for the feedback."
         await callback.answer(msg, show_alert=True)
+        await callback.message.answer("Optional: type how we can improve and I'll pass it on personally.")
         return
     await callback.answer()
 
@@ -4311,6 +4394,20 @@ async def route_text(message: Message) -> None:
     typing_task = asyncio.create_task(_typing_loop(message.bot, chat_id, stop))
     try:
         async with lock:
+            pending_fb = await _get_pending_feedback_suggestion(chat_id)
+            if pending_fb:
+                await _clear_pending_feedback_suggestion(chat_id)
+                from_username = getattr(message.from_user, "username", None) or getattr(message.from_user, "first_name", None) or ""
+                await _notify_admins_negative_feedback(
+                    from_chat_id=chat_id,
+                    from_username=from_username,
+                    reason=str(pending_fb.get("reason") or "other"),
+                    reply_preview=str(pending_fb.get("reply_preview") or ""),
+                    improvement_text=text.strip() or None,
+                )
+                await message.answer("Thanks — I've passed that on personally. We'll use it to improve.")
+                return
+
             cmd_wizard = await _cmd_wizard_get(chat_id)
             if cmd_wizard:
                 step = str(cmd_wizard.get("step") or "").strip().lower()
