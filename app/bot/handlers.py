@@ -1110,11 +1110,24 @@ async def _llm_market_chat_reply(
     if _is_definition_question(cleaned):
         context_block += "This is a definition/knowledge question. Answer from trading knowledge only. Do not ask for ticker or timeframe.\n\n"
     if mkt_text:
-        context_block += f"Live market snapshot (BTC, ETH, SOL — no other symbols): {mkt_text}\n"
+        context_block += f"Live market snapshot (BTC, ETH, SOL): {mkt_text}\n"
     else:
         context_block += "Live market snapshot: not available.\n"
     if news_lines:
         context_block += f"Recent crypto news:\n{news_lines}\n"
+
+    # If user asked about a specific coin (e.g. POWER, POWERUSDT), try to fetch price from exchanges (Bybit, etc.)
+    last_syms = list((settings or {}).get("last_symbols") or [])[:5]
+    asked_symbol = _extract_symbol_for_fundamentals(cleaned, last_syms)
+    if asked_symbol and asked_symbol not in ("BTC", "ETH", "SOL"):
+        try:
+            quote = await hub.market_router.get_price(asked_symbol)
+            if quote and float(quote.get("price") or 0) > 0:
+                price = float(quote["price"])
+                source = str(quote.get("source_line") or quote.get("source") or "exchange")
+                context_block += f"\nRequested symbol {asked_symbol}: ${price:,.2f} (from {source}). You have data for this symbol — use it to answer; do not say you only have BTC/ETH/SOL.\n"
+        except Exception:  # noqa: BLE001
+            pass
 
     if _wants_fundamentals(cleaned):
         last_syms = list((settings or {}).get("last_symbols") or [])[:5]
@@ -1146,9 +1159,8 @@ async def _llm_market_chat_reply(
         "GHOST PERSONA (only when they ask who you are or your personality): "
         "You are Ghost — sharp, no-nonsense, crypto-native. You tell the truth even when it hurts. Slightly unhinged, unfiltered; not a cheerleader. One short paragraph max.\n\n"
         "RULES:\n"
-        "- The snapshot above has BTC, ETH, SOL. It does NOT include gold (XAUUSDT), other alts, or forex. "
-        "If the user asked about a symbol that is NOT in the snapshot, say clearly: \"I don't have recent data for [that symbol].\" "
-        "Do not give analysis for that symbol as if you had data. Do not substitute BTC/ETH data for it.\n"
+        "- The snapshot above has BTC, ETH, SOL. If 'Requested symbol X' data is provided above, you have price data for that symbol (e.g. from Bybit) — use it and do not say you only have BTC/ETH/SOL. "
+        "Only say \"I don't have recent data for [symbol]\" when that symbol is NOT in the snapshot and NOT listed as 'Requested symbol'. Do not substitute BTC/ETH data for another symbol.\n"
         "- NEVER tie metals to crypto. Do not say gold/XAU moves inverse to crypto, or is a safe haven when crypto falls, or predict metals from BTC. If they ask about gold or XAU, say you don't link metals to crypto and don't speculate on that; keep the answer short and do not add a 'coins to watch' with XAU context.\n"
         "- If the user says \"outdated price\" or \"old data\" or \"prices are wrong\": acknowledge it in one short sentence. "
         "Then either say the snapshot above is the freshest you have, or that you don't have newer data. "

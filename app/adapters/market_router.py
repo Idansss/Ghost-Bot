@@ -182,7 +182,7 @@ class MarketDataRouter:
         return await adapter.list_perp_markets()
 
     # Symbols that often miss on stale cache (e.g. newly listed). Refresh instrument lists before first try.
-    _REFRESH_INSTRUMENTS_FOR: frozenset[str] = frozenset({"PIEVERSE", "PIE"})
+    _REFRESH_INSTRUMENTS_FOR: frozenset[str] = frozenset({"PIEVERSE", "PIE", "POWER"})
 
     async def _clear_instrument_caches(self) -> None:
         """Clear exchange instrument list caches so next request refetches (helps newly listed coins)."""
