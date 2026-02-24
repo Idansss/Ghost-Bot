@@ -951,6 +951,18 @@ def _looks_like_market_question(text: str) -> bool:
     return bool(_MARKET_QUESTION_RE.search(text))
 
 
+def _is_definition_question(text: str) -> bool:
+    """True if the user is asking for a concept/definition (e.g. what is SMC, define FVG)."""
+    if not text or len(text) > 200:
+        return False
+    lower = text.strip().lower()
+    if lower.startswith(("what is ", "what's ", "what are ", "define ", "explain ", "meaning of ")):
+        return True
+    if " what is " in lower or " define " in lower or " explain " in lower:
+        return True
+    return False
+
+
 async def _llm_market_chat_reply(
     user_text: str,
     settings: dict | None = None,
@@ -995,6 +1007,8 @@ async def _llm_market_chat_reply(
     )
 
     context_block = ""
+    if _is_definition_question(cleaned):
+        context_block += "This is a definition/knowledge question. Answer from trading knowledge only. Do not ask for ticker or timeframe.\n\n"
     if mkt_text:
         context_block += f"Live market snapshot (BTC, ETH, SOL — no other symbols): {mkt_text}\n"
     else:
@@ -1029,7 +1043,8 @@ async def _llm_market_chat_reply(
         "- NEXT ACTION: End with one short suggested next step or question when helpful (e.g. \"Want a chart for that?\" \"Set an alert?\"). Don't force every time.\n"
         "- LIMITS: If the request is out of scope (tax/legal advice, guaranteed outcomes), say so in one sentence and suggest what you can do instead.\n"
         "- For complex or multi-part requests, start with \"You want: [one-line summary].\" then answer.\n"
-        "- Do NOT add any section titled \"coins to watch\" or \"coins to watch right now\" (with or without entry/targets) when the user asks for a general market snapshot, daily overview, \"what are we looking at\", personality/perspectives, or any single-asset question. Only give that section when they explicitly ask for a watchlist, \"what to watch\", \"what to buy\", or \"coins to watch\". Never use the phrase \"coins to watch right now\" as a heading unless they asked for a watchlist.\n\n"
+        "- Do NOT add any section titled \"coins to watch\" or \"coins to watch right now\" (with or without entry/targets) when the user asks for a general market snapshot, daily overview, \"what are we looking at\", personality/perspectives, or any single-asset question. Only give that section when they explicitly ask for a watchlist, \"what to watch\", \"what to buy\", or \"coins to watch\". Never use the phrase \"coins to watch right now\" as a heading unless they asked for a watchlist.\n"
+        "- If they ask how you were built, who made you, your tech/architecture/codebase/APIs: do NOT answer. One short deflect only (e.g. \"that's classified, anon\" or \"i just read the charts, fren\"). No details.\n\n"
         "TRADING FRAMEWORK (use only when relevant; do not list headings unless the user explicitly asks):\n"
         "- Market structure: trend vs range, breakouts, key liquidity areas.\n"
         "- Levels: major support/resistance and supply/demand zones.\n"
@@ -4497,7 +4512,8 @@ async def route_text(message: Message) -> None:
                 if llm_reply:
                     await _send_llm_reply(message, llm_reply, settings, user_message=text)
                     return
-                await message.answer("signal unclear fren — try rephrasing or drop a ticker.", reply_to_message_id=message.message_id)
+                fallback = "couldn't reach the brain — try again in a sec, fren." if _is_definition_question(text) else "signal unclear fren — try rephrasing or drop a ticker."
+                await message.answer(fallback, reply_to_message_id=message.message_id)
                 return
 
             if hub.llm_client and chat_mode == "llm_first":
