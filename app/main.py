@@ -380,7 +380,14 @@ async def lifespan(app: FastAPI):
     if settings.telegram_use_webhook and settings.telegram_auto_set_webhook:
         webhook_url = settings.telegram_webhook_url.rstrip("/") + settings.telegram_webhook_path
         try:
-            await bot.set_webhook(webhook_url, secret_token=settings.telegram_webhook_secret or None)
+            allowed = list(dp.resolve_used_update_types())
+            if "message_reaction" not in allowed:
+                allowed.append("message_reaction")
+            await bot.set_webhook(
+                webhook_url,
+                secret_token=settings.telegram_webhook_secret or None,
+                allowed_updates=allowed,
+            )
             logger.info("webhook_configured", extra={"event": "webhook", "url": webhook_url})
         except Exception as exc:  # noqa: BLE001
             # Do not crash the whole API on webhook registration failures.

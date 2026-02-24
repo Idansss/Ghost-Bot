@@ -11,7 +11,14 @@ import logging
 from aiogram import F, Router
 from aiogram.enums import ChatAction
 from aiogram.filters import Command
-from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    MessageReactionUpdated,
+)
 
 from app.bot.keyboards import (
     alert_created_menu,
@@ -3242,9 +3249,13 @@ async def _notify_admins_negative_feedback(
     reply_preview: str,
     improvement_text: str | None = None,
 ) -> None:
-    """Send negative feedback (and optional improvement text) to all admin chat IDs."""
+    """Send negative feedback (and optional improvement text) to all admin chat IDs (e.g. your DM)."""
     admin_ids = _settings.admin_ids_list()
     if not admin_ids:
+        logger.warning(
+            "feedback_no_admin_ids",
+            extra={"event": "feedback_no_admin_ids", "from_chat_id": from_chat_id},
+        )
         return
     username = from_username or "—"
     preview = (reply_preview or "")[:400].replace("<", " ").replace(">", " ")
@@ -3262,8 +3273,16 @@ async def _notify_admins_negative_feedback(
     for admin_id in admin_ids:
         try:
             await hub.telegram_bot.send_message(admin_id, text, parse_mode="HTML")
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "feedback_dm_failed",
+                extra={
+                    "event": "feedback_dm_failed",
+                    "admin_id": admin_id,
+                    "error": str(exc),
+                    "hint": "Ensure ADMIN_CHAT_IDS is your Telegram user ID and you have started the bot in DMs.",
+                },
+            )
 
 
 @router.callback_query(F.data.startswith("feedback:"))
@@ -3336,6 +3355,43 @@ async def feedback_callback(callback: CallbackQuery) -> None:
         await callback.message.answer("Optional: type how we can improve and I'll pass it on personally.")
         return
     await callback.answer()
+
+
+def _is_negative_reaction(reaction_list: list) -> bool:
+    """True if the reaction list contains a thumbs-down or similar negative emoji."""
+    if not reaction_list:
+        return False
+    negative_emojis = {"👎", "👎🏻", "👎🏼", "👎🏽", "👎🏾", "👎🏿", "😞", "🤮"}
+    for r in reaction_list:
+        emoji = getattr(r, "emoji", None) or getattr(r, "type", None)
+        if emoji and str(emoji).strip() in negative_emojis:
+            return True
+        if hasattr(r, "emoji") and r.emoji and "thumbs" in str(r.emoji).lower():
+            return True
+    return False
+
+
+@router.message_reaction()
+async def message_reaction_handler(reaction_update: MessageReactionUpdated) -> None:
+    """When someone uses Telegram's native reaction (e.g. 👎) on a bot message, notify admins."""
+    if not _is_negative_reaction(reaction_update.new_reaction or []):
+        return
+    hub = _require_hub()
+    chat_id = reaction_update.chat.id
+    user = reaction_update.user
+    from_username = (getattr(user, "username", None) or getattr(user, "first_name", None) or "—") if user else "—"
+    reply_preview = ""
+    try:
+        last = await hub.cache.get_json(f"llm:last_reply:{chat_id}")
+        reply_preview = (last or "")[:500] if isinstance(last, str) else str(last or "")[:500]
+    except Exception:  # noqa: BLE001
+        pass
+    await _notify_admins_negative_feedback(
+        from_chat_id=chat_id,
+        from_username=from_username,
+        reason="reaction (message reaction)",
+        reply_preview=reply_preview or "(no preview)",
+    )
 
 
 @router.callback_query(F.data.startswith("confirm:understood:"))
