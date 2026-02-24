@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+import re
+
+
+def strip_html_tags(text: str) -> str:
+    """Remove HTML tags so user never sees literal <b> or </b>. Keeps inner text."""
+    if not text:
+        return text
+    return re.sub(r"<[^>]+>", "", str(text))
+
 
 def safe_html(text: str) -> str:
     """Escape special HTML characters so dynamic content is safe in HTML parse_mode."""

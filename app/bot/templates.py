@@ -4,7 +4,7 @@ import random
 from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 
-from app.core.fmt import fmt_price, safe_html
+from app.core.fmt import fmt_price, safe_html, strip_html_tags
 
 # ---------------------------------------------------------------------------
 # Personality pools
@@ -226,8 +226,9 @@ def watchlist_template(payload: dict) -> str:
 
 
 def news_template(payload: dict) -> str:
-    summary = safe_html(payload.get("summary", ""))
-    vibe = safe_html(payload.get("vibe", ""))
+    # Strip LLM HTML so user never sees literal <b> or </b>; then escape for safety
+    summary = safe_html(strip_html_tags(payload.get("summary", "")))
+    vibe = safe_html(strip_html_tags(payload.get("vibe", "")))
     headlines = payload.get("headlines", [])[:5]
 
     lines = [

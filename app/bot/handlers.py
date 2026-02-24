@@ -1452,7 +1452,7 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
             source_line=f"{head.get('source', 'news feed')} | {head.get('url', '')}".strip(),
             context="news",
         )
-        await message.answer(news_template(payload))
+        await message.answer(news_template(payload), parse_mode="HTML")
         return True
 
     if intent in {"watch_asset", "market_analysis"}:
@@ -2312,7 +2312,7 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
             source_line=f"{head.get('source', 'news feed')} | {head.get('url', '')}".strip(),
             context="news",
         )
-        await message.answer(news_template(payload))
+        await message.answer(news_template(payload), parse_mode="HTML")
         return True
 
     if parsed.intent == Intent.SCAN_WALLET:
@@ -2642,7 +2642,7 @@ async def news_cmd(message: Message) -> None:
         source_line=f"{head.get('source', 'news feed')} | {head.get('url', '')}".strip(),
         context="news",
     )
-    await message.answer(news_template(payload))
+    await message.answer(news_template(payload), parse_mode="HTML")
 
 
 @router.message(Command("cycle"))
@@ -4348,7 +4348,7 @@ async def quick_news_callback(callback: CallbackQuery) -> None:
         mode_norm = "openai" if mode == "openai" else "crypto"
         topic = "openai" if mode_norm == "openai" else "crypto"
         payload = await hub.news_service.get_digest(topic=topic, mode=mode_norm, limit=6)
-        await callback.message.answer(news_template(payload))
+        await callback.message.answer(news_template(payload), parse_mode="HTML")
         await callback.answer()
 
     await _run_with_typing_lock(callback.bot, chat_id, _run)
@@ -4435,7 +4435,7 @@ async def define_easter_egg_callback(callback: CallbackQuery) -> None:
 
         if action == "news":
             payload = await hub.news_service.get_digest(topic="DEFINE", mode="crypto", limit=6)
-            await callback.message.answer(news_template(payload))
+            await callback.message.answer(news_template(payload), parse_mode="HTML")
             await callback.answer()
             return
 
