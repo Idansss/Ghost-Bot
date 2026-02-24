@@ -644,7 +644,7 @@ def asset_unsupported_template(payload: dict, settings: dict) -> str:
         closer = "Send a chart link or contract address and I'll work with that."
     elif tone == "standard":
         opener = "Can't fetch full technical data for this asset right now."
-        closer = "Try BTC, ETH, SOL, or share chart/contract details."
+        closer = "Try one of the alternatives above, or share chart/contract details."
     else:
         opener = "Data is currently unavailable for this asset."
         closer = "Please share additional context or another symbol."

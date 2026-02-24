@@ -37,7 +37,7 @@ class BybitExchangeAdapter:
     async def _paged_instruments(self, category: str) -> list[dict]:
         cursor = ""
         out: list[dict] = []
-        for _ in range(5):
+        for _ in range(15):
             params = {"category": category, "limit": 1000}
             if cursor:
                 params["cursor"] = cursor

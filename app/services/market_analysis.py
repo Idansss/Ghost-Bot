@@ -472,11 +472,20 @@ class MarketAnalysisService:
             "I would wait for a clean breakout/reclaim on your chart, then define entry + stop after confirmation."
         )
 
+        # Top alts we can usually map (exchanges support these); exclude the one that failed
+        default_alts = [
+            "BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "AVAX",
+            "LINK", "DOT", "MATIC", "UNI", "ATOM", "LTC", "ARB", "OP",
+        ]
+        alternatives = [s for s in default_alts if s != symbol_u][:12]
+        if not alternatives:
+            alternatives = ["BTC", "ETH", "SOL"]
+
         return {
             "symbol": symbol_u,
             "reason": reason or f"I can't fetch candles for {symbol_u} right now.",
             "narrative": narrative,
             "safe_action": safe_action,
-            "alternatives": ["BTC", "ETH", "SOL"],
+            "alternatives": alternatives,
             "headlines": headlines,
         }

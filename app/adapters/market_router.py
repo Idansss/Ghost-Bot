@@ -181,12 +181,33 @@ class MarketDataRouter:
             return await adapter.list_spot_markets()
         return await adapter.list_perp_markets()
 
+    async def _clear_instrument_caches(self) -> None:
+        """Clear exchange instrument list caches so next request refetches (helps newly listed coins)."""
+        keys = []
+        for ex in self.adapters:
+            keys.append(f"ex:{ex}:spot:markets")
+            keys.append(f"ex:{ex}:perp:markets")
+        if keys:
+            await self.cache.delete(*keys)
+
     async def _resolve_instrument(self, exchange: str, symbol: str, market_kind: str) -> str | None:
         try:
             markets = await self._markets(exchange, market_kind)
         except Exception:  # noqa: BLE001
             return None
-        return markets.get(symbol)
+        inst = markets.get(symbol)
+        if inst:
+            return inst
+        # Fallback: some APIs key by full pair (e.g. PIEVERSEUSDT)
+        inst = markets.get(symbol + "USDT")
+        if inst:
+            return inst
+        # Case-insensitive match for robustness
+        sym_upper = symbol.upper()
+        for k, v in markets.items():
+            if (k or "").upper() == sym_upper:
+                return v
+        return None
 
     def _source_line(
         self,
@@ -248,62 +269,65 @@ class MarketDataRouter:
         base = self._normalize(symbol)
         first_exchange = self.priority[0] if self.priority else None
         errors: list[str] = []
-        for kind in self._kinds_for_market_data():
-            for ex, inst in await self._candidate_sources(base, kind):
-                cache_key = f"quote:{ex}:{kind}:{inst}"
-                cached = await self.cache.get_json(cache_key)
-                if cached and float(cached.get("price", 0) or 0) > 0:
-                    fallback_from = first_exchange if first_exchange and ex != first_exchange else None
-                    line = self._source_line(
-                        exchange=ex,
-                        market_kind=kind,
-                        instrument_id=inst,
-                        updated_at=str(cached.get("ts")),
-                        fallback_from=fallback_from,
-                    )
-                    return PriceQuote(
-                        symbol=base,
-                        price=float(cached["price"]),
-                        exchange=ex,
-                        market_kind=kind,
-                        instrument_id=inst,
-                        source=f"{ex}_{kind}",
-                        source_line=line,
-                        updated_at=str(cached.get("ts")),
-                        fallback_from=fallback_from,
-                    ).to_dict()
+        for attempt in range(2):
+            if attempt == 1:
+                await self._clear_instrument_caches()
+            for kind in self._kinds_for_market_data():
+                for ex, inst in await self._candidate_sources(base, kind):
+                    cache_key = f"quote:{ex}:{kind}:{inst}"
+                    cached = await self.cache.get_json(cache_key)
+                    if cached and float(cached.get("price", 0) or 0) > 0:
+                        fallback_from = first_exchange if first_exchange and ex != first_exchange else None
+                        line = self._source_line(
+                            exchange=ex,
+                            market_kind=kind,
+                            instrument_id=inst,
+                            updated_at=str(cached.get("ts")),
+                            fallback_from=fallback_from,
+                        )
+                        return PriceQuote(
+                            symbol=base,
+                            price=float(cached["price"]),
+                            exchange=ex,
+                            market_kind=kind,
+                            instrument_id=inst,
+                            source=f"{ex}_{kind}",
+                            source_line=line,
+                            updated_at=str(cached.get("ts")),
+                            fallback_from=fallback_from,
+                        ).to_dict()
 
-                try:
-                    await self._acquire_exchange_token(ex)
-                    payload = await self.adapters[ex].get_price(inst, market_kind=kind)
-                    price = float(payload["price"])
-                    if price <= 0:
-                        raise RuntimeError("non_positive_price")
-                    updated_at = str(payload.get("ts") or datetime.now(timezone.utc).isoformat())
-                    await self.cache.set_json(cache_key, {"price": price, "ts": updated_at}, ttl=self.price_ttl)
-                    await self._best_source_set(base, kind, ex, inst)
-                    fallback_from = first_exchange if first_exchange and ex != first_exchange else None
-                    line = self._source_line(
-                        exchange=ex,
-                        market_kind=kind,
-                        instrument_id=inst,
-                        updated_at=updated_at,
-                        fallback_from=fallback_from,
-                    )
-                    return PriceQuote(
-                        symbol=base,
-                        price=price,
-                        exchange=ex,
-                        market_kind=kind,
-                        instrument_id=inst,
-                        source=f"{ex}_{kind}",
-                        source_line=line,
-                        updated_at=updated_at,
-                        fallback_from=fallback_from,
-                    ).to_dict()
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f"{ex}:{kind}:{exc}")
-                    continue
+                    try:
+                        await self._acquire_exchange_token(ex)
+                        payload = await self.adapters[ex].get_price(inst, market_kind=kind)
+                        price = float(payload["price"])
+                        if price <= 0:
+                            raise RuntimeError("non_positive_price")
+                        updated_at = str(payload.get("ts") or datetime.now(timezone.utc).isoformat())
+                        await self.cache.set_json(cache_key, {"price": price, "ts": updated_at}, ttl=self.price_ttl)
+                        await self._best_source_set(base, kind, ex, inst)
+                        fallback_from = first_exchange if first_exchange and ex != first_exchange else None
+                        line = self._source_line(
+                            exchange=ex,
+                            market_kind=kind,
+                            instrument_id=inst,
+                            updated_at=updated_at,
+                            fallback_from=fallback_from,
+                        )
+                        return PriceQuote(
+                            symbol=base,
+                            price=price,
+                            exchange=ex,
+                            market_kind=kind,
+                            instrument_id=inst,
+                            source=f"{ex}_{kind}",
+                            source_line=line,
+                            updated_at=updated_at,
+                            fallback_from=fallback_from,
+                        ).to_dict()
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"{ex}:{kind}:{exc}")
+                        continue
         raise RuntimeError(f"Price unavailable for {base}; tried {', '.join(errors[:6])}")
 
     async def get_ohlcv(self, symbol: str, timeframe: str, limit: int = 200) -> dict:
@@ -313,14 +337,50 @@ class MarketDataRouter:
         tf = (timeframe or "1h").strip().lower()
         lim = max(20, min(int(limit), 1000))
 
-        for kind in self._kinds_for_market_data():
-            for ex, inst in await self._candidate_sources(base, kind):
-                cache_key = f"ohlcv:{ex}:{kind}:{inst}:{tf}:{lim}"
-                cached = await self.cache.get_json(cache_key)
-                if isinstance(cached, dict) and isinstance(cached.get("candles"), list):
-                    candles = cached.get("candles", [])
-                    if candles_are_sane(candles):
-                        updated_at = str(cached.get("updated_at") or datetime.now(timezone.utc).isoformat())
+        for attempt in range(2):
+            if attempt == 1:
+                await self._clear_instrument_caches()
+            for kind in self._kinds_for_market_data():
+                for ex, inst in await self._candidate_sources(base, kind):
+                    cache_key = f"ohlcv:{ex}:{kind}:{inst}:{tf}:{lim}"
+                    cached = await self.cache.get_json(cache_key)
+                    if isinstance(cached, dict) and isinstance(cached.get("candles"), list):
+                        candles = cached.get("candles", [])
+                        if candles_are_sane(candles):
+                            updated_at = str(cached.get("updated_at") or datetime.now(timezone.utc).isoformat())
+                            fallback_from = first_exchange if first_exchange and ex != first_exchange else None
+                            line = self._source_line(
+                                exchange=ex,
+                                market_kind=kind,
+                                instrument_id=inst,
+                                updated_at=updated_at,
+                                fallback_from=fallback_from,
+                            )
+                            return OhlcvSeries(
+                                symbol=base,
+                                timeframe=tf,
+                                candles=candles,
+                                exchange=ex,
+                                market_kind=kind,
+                                instrument_id=inst,
+                                source=f"{ex}_{kind}",
+                                source_line=line,
+                                updated_at=updated_at,
+                                fallback_from=fallback_from,
+                            ).to_dict()
+
+                    try:
+                        await self._acquire_exchange_token(ex)
+                        candles = await self.adapters[ex].get_ohlcv(inst, tf, lim, market_kind=kind)
+                        if not candles_are_sane(candles):
+                            raise RuntimeError("invalid_candles")
+                        updated_at = datetime.now(timezone.utc).isoformat()
+                        await self.cache.set_json(
+                            cache_key,
+                            {"candles": candles, "updated_at": updated_at},
+                            ttl=self.ohlcv_ttl,
+                        )
+                        await self._best_source_set(base, kind, ex, inst)
                         fallback_from = first_exchange if first_exchange and ex != first_exchange else None
                         line = self._source_line(
                             exchange=ex,
@@ -341,42 +401,9 @@ class MarketDataRouter:
                             updated_at=updated_at,
                             fallback_from=fallback_from,
                         ).to_dict()
-
-                try:
-                    await self._acquire_exchange_token(ex)
-                    candles = await self.adapters[ex].get_ohlcv(inst, tf, lim, market_kind=kind)
-                    if not candles_are_sane(candles):
-                        raise RuntimeError("invalid_candles")
-                    updated_at = datetime.now(timezone.utc).isoformat()
-                    await self.cache.set_json(
-                        cache_key,
-                        {"candles": candles, "updated_at": updated_at},
-                        ttl=self.ohlcv_ttl,
-                    )
-                    await self._best_source_set(base, kind, ex, inst)
-                    fallback_from = first_exchange if first_exchange and ex != first_exchange else None
-                    line = self._source_line(
-                        exchange=ex,
-                        market_kind=kind,
-                        instrument_id=inst,
-                        updated_at=updated_at,
-                        fallback_from=fallback_from,
-                    )
-                    return OhlcvSeries(
-                        symbol=base,
-                        timeframe=tf,
-                        candles=candles,
-                        exchange=ex,
-                        market_kind=kind,
-                        instrument_id=inst,
-                        source=f"{ex}_{kind}",
-                        source_line=line,
-                        updated_at=updated_at,
-                        fallback_from=fallback_from,
-                    ).to_dict()
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f"{ex}:{kind}:{exc}")
-                    continue
+                    except Exception as exc:  # noqa: BLE001
+                        errors.append(f"{ex}:{kind}:{exc}")
+                        continue
         raise RuntimeError(f"OHLCV unavailable for {base} {tf}; tried {', '.join(errors[:6])}")
 
     async def get_orderbook(self, symbol: str, depth: int = 50) -> dict:
