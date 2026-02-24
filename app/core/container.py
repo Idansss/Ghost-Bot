@@ -22,6 +22,7 @@ from app.services.orderbook_heatmap import OrderbookHeatmapService
 from app.services.rsi_scanner import RSIScannerService
 from app.services.setup_review import SetupReviewService
 from app.services.charting import ChartService
+from app.services.coin_info import CoinInfoService
 from app.services.trade_verify import TradeVerifyService
 from app.services.users import UserService
 from app.services.wallet_scan import WalletScanService
@@ -55,6 +56,7 @@ class ServiceHub:
     chart_service: ChartService
     orderbook_heatmap_service: OrderbookHeatmapService
     discovery_service: DiscoveryService
+    coin_info_service: CoinInfoService
     giveaway_service: GiveawayService
     broadcast_service: BroadcastService | None = None
     portfolio_service: PortfolioService | None = None

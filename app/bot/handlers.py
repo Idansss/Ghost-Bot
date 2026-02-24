@@ -970,6 +970,99 @@ def _is_definition_question(text: str) -> bool:
     return False
 
 
+# Keywords that suggest the user wants coin fundamentals (stats, links, about, fear/greed).
+_FUNDAMENTALS_KEYWORDS = (
+    "info", "fundamentals", "market cap", "marketcap", "ath", "atl", "all time high", "all time low",
+    "supply", "circulating", "max supply", "total supply", "fdv", "diluted", "valuation",
+    "website", "explorer", "explorers", "links", "social", "twitter", "telegram", "reddit",
+    "about the coin", "about this coin", "what is this coin", "fear", "greed", "fear and greed",
+    "treasury", "volume", "trading volume", "market cap/fdv", "mc/fdv",
+)
+
+
+def _wants_fundamentals(text: str) -> bool:
+    if not text or len(text) < 3:
+        return False
+    lower = text.strip().lower()
+    return any(k in lower for k in _FUNDAMENTALS_KEYWORDS)
+
+
+def _extract_symbol_for_fundamentals(text: str, last_symbols: list) -> str | None:
+    """Get a single symbol from message or last_symbols for fundamentals lookup."""
+    try:
+        from app.core.nlu import _extract_symbols
+        syms = _extract_symbols(text)
+        if syms:
+            base = getattr(syms[0], "base", None) or (syms[0] if isinstance(syms[0], str) else None)
+            if base:
+                return str(base).upper()
+    except Exception:  # noqa: BLE001
+        pass
+    if last_symbols:
+        return str(last_symbols[0]).upper().strip() if last_symbols else None
+    return None
+
+
+def _format_coin_fundamentals_block(info: dict | None, fear_greed: dict | None) -> str:
+    """Format coin info + Fear & Greed as a text block for the LLM (use when relevant, don't dump every time)."""
+    lines = ["<b>Coin fundamentals (use only when user asks for stats, links, or about):</b>"]
+    if not info:
+        lines.append("(No fundamentals data for this symbol.)")
+    else:
+        def _fmt_num(x):  # noqa: B903
+            if x is None:
+                return "—"
+            if x >= 1e12:
+                return f"{x / 1e12:.2f}T"
+            if x >= 1e9:
+                return f"{x / 1e9:.2f}B"
+            if x >= 1e6:
+                return f"{x / 1e6:.2f}M"
+            if x >= 1e3:
+                return f"{x / 1e3:.2f}k"
+            return f"{x:,.2f}"
+
+        name = info.get("name") or info.get("symbol") or "—"
+        lines.append(f"Name: {name} ({info.get('symbol', '')})")
+        if info.get("high_24h") is not None or info.get("low_24h") is not None:
+            lines.append(f"24H high: {_fmt_num(info.get('high_24h'))} | 24H low: {_fmt_num(info.get('low_24h'))}")
+        if info.get("ath") is not None or info.get("atl") is not None:
+            lines.append(f"ATH: {_fmt_num(info.get('ath'))} | ATL: {_fmt_num(info.get('atl'))}")
+        if info.get("market_cap") is not None:
+            lines.append(f"Market cap: ${_fmt_num(info.get('market_cap'))}")
+        if info.get("circulating_supply") is not None:
+            lines.append(f"Circulating supply: {_fmt_num(info.get('circulating_supply'))}")
+        if info.get("total_supply") is not None:
+            lines.append(f"Total supply: {_fmt_num(info.get('total_supply'))}")
+        if info.get("max_supply") is not None:
+            lines.append(f"Max supply: {_fmt_num(info.get('max_supply'))}")
+        if info.get("fdv") is not None:
+            lines.append(f"FDV: ${_fmt_num(info.get('fdv'))}")
+        if info.get("market_cap_fdv_ratio") is not None:
+            lines.append(f"Market cap / FDV ratio: {info.get('market_cap_fdv_ratio')}")
+        if info.get("total_volume") is not None:
+            lines.append(f"Trading volume (24h): ${_fmt_num(info.get('total_volume'))}")
+        if info.get("website"):
+            lines.append(f"Website: {info.get('website')}")
+        if info.get("explorers"):
+            lines.append("Explorers: " + ", ".join(info.get("explorers", [])[:3]))
+        if info.get("social"):
+            social = info.get("social", {})
+            parts = [f"{k}: {v}" for k, v in list(social.items())[:4]]
+            if parts:
+                lines.append("Social: " + " | ".join(parts))
+        if info.get("about"):
+            about = (info.get("about") or "")[:800].strip()
+            if about:
+                lines.append(f"About: {about}")
+    if fear_greed:
+        v = fear_greed.get("value")
+        c = fear_greed.get("classification")
+        if v is not None or c:
+            lines.append(f"Crypto Fear & Greed Index: {v} ({c})" if (v is not None and c) else f"Fear & Greed: {c or v}")
+    return "\n".join(lines)
+
+
 async def _llm_market_chat_reply(
     user_text: str,
     settings: dict | None = None,
@@ -1023,6 +1116,23 @@ async def _llm_market_chat_reply(
     if news_lines:
         context_block += f"Recent crypto news:\n{news_lines}\n"
 
+    if _wants_fundamentals(cleaned):
+        last_syms = list((settings or {}).get("last_symbols") or [])[:5]
+        symbol_for_info = _extract_symbol_for_fundamentals(cleaned, last_syms)
+        if symbol_for_info and getattr(hub, "coin_info_service", None):
+            try:
+                info_task = hub.coin_info_service.get_coin_info(symbol_for_info)
+                fg_task = hub.coin_info_service.get_fear_greed()
+                info, fear_greed = await asyncio.gather(info_task, fg_task, return_exceptions=True)
+                if isinstance(info, Exception):
+                    info = None
+                if isinstance(fear_greed, Exception):
+                    fear_greed = None
+                fundamentals_block = _format_coin_fundamentals_block(info, fear_greed)
+                context_block += "\n\n" + fundamentals_block + "\n"
+            except Exception:  # noqa: BLE001
+                pass
+
     ultra = (settings or {}).get("ultra_brief")
     length_rule = (
         "Answer in one short sentence only."
@@ -1051,7 +1161,8 @@ async def _llm_market_chat_reply(
         "- LIMITS: If the request is out of scope (tax/legal advice, guaranteed outcomes), say so in one sentence and suggest what you can do instead.\n"
         "- For complex or multi-part requests, start with \"You want: [one-line summary].\" then answer.\n"
         "- Do NOT add any section titled \"coins to watch\" or \"coins to watch right now\" (with or without entry/targets) when the user asks for a general market snapshot, daily overview, \"what are we looking at\", personality/perspectives, or any single-asset question. Only give that section when they explicitly ask for a watchlist, \"what to watch\", \"what to buy\", or \"coins to watch\". Never use the phrase \"coins to watch right now\" as a heading unless they asked for a watchlist.\n"
-        "- If they ask how you were built, who made you, your tech/architecture/codebase/APIs: do NOT answer. One short deflect only (e.g. \"that's classified, anon\" or \"i just read the charts, fren\"). No details.\n\n"
+        "- If they ask how you were built, who made you, your tech/architecture/codebase/APIs: do NOT answer. One short deflect only (e.g. \"that's classified, anon\" or \"i just read the charts, fren\"). No details.\n"
+        "- When a 'Coin fundamentals' block is present above, use it only to answer questions about that coin's stats (24h high/low, ATH/ATL, market cap, supply, FDV, volume), website, explorers, social links, about, or Fear & Greed. Do not dump the whole block; answer what they asked. If they asked for a full overview, you can summarize key points.\n\n"
         "TRADING FRAMEWORK (use only when relevant; do not list headings unless the user explicitly asks):\n"
         "- Market structure: trend vs range, breakouts, key liquidity areas.\n"
         "- Levels: major support/resistance and supply/demand zones.\n"

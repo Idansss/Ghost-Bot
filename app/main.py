@@ -43,6 +43,7 @@ from app.services.orderbook_heatmap import OrderbookHeatmapService
 from app.services.rsi_scanner import RSIScannerService
 from app.services.setup_review import SetupReviewService
 from app.services.charting import ChartService
+from app.services.coin_info import CoinInfoService
 from app.services.trade_verify import TradeVerifyService
 from app.services.users import UserService
 from app.services.wallet_scan import WalletScanService
@@ -323,6 +324,11 @@ def build_hub(settings: Settings, bot: Bot, cache: RedisCache, http: ResilientHT
         chart_service=chart_service,
         orderbook_heatmap_service=orderbook_heatmap_service,
         discovery_service=discovery_service,
+        coin_info_service=CoinInfoService(
+            http=http,
+            cache=cache,
+            coingecko_base=settings.coingecko_base_url,
+        ),
         giveaway_service=giveaway_service,
         broadcast_service=broadcast_service,
         portfolio_service=PortfolioService(
