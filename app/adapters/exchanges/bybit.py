@@ -61,7 +61,8 @@ class BybitExchangeAdapter:
             status = str(row.get("status", "")).upper()
             if not symbol.endswith("USDT"):
                 continue
-            if status and status not in {"TRADING", "ONLINE"}:
+            # Allow TRADING, ONLINE, empty; exclude only known closed/unlist states
+            if status and status in {"OFFLINE", "CLOSED", "SUSPENDED", "PENDING"}:
                 continue
             out[symbol[:-4]] = symbol
         await self.cache.set_json(key, out, ttl=self.instruments_ttl_sec)
@@ -79,7 +80,7 @@ class BybitExchangeAdapter:
             status = str(row.get("status", "")).upper()
             if not symbol.endswith("USDT"):
                 continue
-            if status and status not in {"TRADING", "ONLINE"}:
+            if status and status in {"OFFLINE", "CLOSED", "SUSPENDED", "PENDING"}:
                 continue
             out[symbol[:-4]] = symbol
         await self.cache.set_json(key, out, ttl=self.instruments_ttl_sec)
