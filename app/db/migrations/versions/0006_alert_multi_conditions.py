@@ -12,10 +12,14 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "alerts",
-        sa.Column("conditions_json", JSONB, nullable=True),
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {str(col["name"]) for col in inspector.get_columns("alerts")}
+    if "conditions_json" not in columns:
+        op.add_column(
+            "alerts",
+            sa.Column("conditions_json", JSONB, nullable=True),
+        )
 
 
 def downgrade() -> None:

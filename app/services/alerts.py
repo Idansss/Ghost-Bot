@@ -12,6 +12,7 @@ from app.adapters.market_router import MarketDataRouter
 from app.adapters.prices import PriceAdapter
 from app.core.cache import RedisCache
 from app.core.enums import AlertStatus
+from app.db.compat import ensure_alert_schema_compat, is_alert_schema_issue
 from app.db.models import Alert, IndicatorSnapshot, User
 from app.domain.alerts import condition_met, extra_condition_met, parse_extra_conditions
 
@@ -48,6 +49,45 @@ class AlertsService:
         await session.flush()
         return user
 
+    async def _create_alert_record(
+        self,
+        chat_id: int,
+        symbol: str,
+        condition: str,
+        target_price: float,
+        source: str,
+        quote: dict | None,
+        extra_conditions: list | None,
+        idempotency_key: str | None,
+    ) -> Alert:
+        async with self.db_factory() as session:
+            if idempotency_key:
+                existing_q = await session.execute(
+                    select(Alert).where(Alert.idempotency_key == idempotency_key)
+                )
+                existing = existing_q.scalar_one_or_none()
+                if existing is not None:
+                    return existing
+
+            user = await self._get_or_create_user(session, chat_id)
+            alert = Alert(
+                user_id=user.id,
+                symbol=str(symbol).upper(),
+                condition=condition,
+                target_price=target_price,
+                status=AlertStatus.ACTIVE,
+                source=source,
+                source_exchange=(quote or {}).get("exchange"),
+                instrument_id=(quote or {}).get("instrument_id"),
+                market_kind=(quote or {}).get("market_kind") or "spot",
+                conditions_json=extra_conditions or None,
+                idempotency_key=idempotency_key or None,
+            )
+            session.add(alert)
+            await session.commit()
+            await session.refresh(alert)
+            return alert
+
     async def create_alert(self, chat_id: int, symbol: str, condition: str, target_price: float, source: str = "user", extra_conditions: list | None = None, idempotency_key: str | None = None) -> Alert:
         daily_key = f"rl:alerts:{chat_id}:{datetime.now(UTC).strftime('%Y%m%d')}"
         count = await self.cache.incr_with_expiry(daily_key, 86400)
@@ -70,58 +110,61 @@ class AlertsService:
             except Exception as exc:
                 logger.warning("alert_price_fetch_failed", extra={"event": "alert_price_fetch_failed", "symbol": symbol, "error": str(exc)})
 
-        try:
-            async with self.db_factory() as session:
-                # Return existing alert if an idempotency key is provided and already used
-                if idempotency_key:
-                    existing_q = await session.execute(select(Alert).where(Alert.idempotency_key == idempotency_key))
-                    existing = existing_q.scalar_one_or_none()
-                    if existing is not None:
-                        return existing
-
-                user = await self._get_or_create_user(session, chat_id)
-                alert = Alert(
-                    user_id=user.id,
-                    symbol=str(symbol).upper(),
+        repaired_schema = False
+        while True:
+            try:
+                return await self._create_alert_record(
+                    chat_id=chat_id,
+                    symbol=symbol,
                     condition=condition,
                     target_price=target_price,
-                    status=AlertStatus.ACTIVE,
                     source=source,
-                    source_exchange=(quote or {}).get("exchange"),
-                    instrument_id=(quote or {}).get("instrument_id"),
-                    market_kind=(quote or {}).get("market_kind") or "spot",
-                    conditions_json=extra_conditions or None,
-                    idempotency_key=idempotency_key or None,
+                    quote=quote,
+                    extra_conditions=extra_conditions,
+                    idempotency_key=idempotency_key,
                 )
-                session.add(alert)
-                await session.commit()
-                await session.refresh(alert)
-                return alert
-        except SQLAlchemyError as exc:
-            msg = str(exc).lower()
-            exc_type = type(exc.__cause__).__name__.lower() if exc.__cause__ else ""
-            logger.exception(
-                "alert_create_db_failed",
-                extra={"event": "alert_create_db_failed", "chat_id": chat_id, "symbol": str(symbol), "error": str(exc)},
-            )
-            # asyncpg surfaces missing columns as UndefinedColumnError / UndefinedTableError;
-            # psycopg2 puts "column ... does not exist" in the message directly.
-            is_schema_issue = (
-                ("does not exist" in msg and ("column" in msg or "relation" in msg))
-                or "undefinedcolumn" in msg
-                or "undefinedcolumn" in exc_type
-                or "undefinedtable" in exc_type
-                or ("undefined" in exc_type and ("column" in msg or "table" in msg))
-            )
-            if is_schema_issue:
-                raise RuntimeError("Alerts DB schema is outdated - run: alembic upgrade head") from exc
-            raise RuntimeError("Alert creation unavailable (database error).") from exc
-        except Exception as exc:
-            logger.exception(
-                "alert_create_unexpected_failed",
-                extra={"event": "alert_create_unexpected_failed", "chat_id": chat_id, "symbol": str(symbol), "error": str(exc)},
-            )
-            raise RuntimeError("Alert creation failed (internal error).") from exc
+            except SQLAlchemyError as exc:
+                logger.exception(
+                    "alert_create_db_failed",
+                    extra={"event": "alert_create_db_failed", "chat_id": chat_id, "symbol": str(symbol), "error": str(exc)},
+                )
+                if is_alert_schema_issue(exc):
+                    if not repaired_schema:
+                        repaired_schema = True
+                        try:
+                            changes = await ensure_alert_schema_compat(self.db_factory)
+                        except Exception as compat_exc:
+                            logger.warning(
+                                "alert_schema_hotfix_failed_on_write",
+                                extra={
+                                    "event": "alert_schema_hotfix_failed_on_write",
+                                    "chat_id": chat_id,
+                                    "symbol": str(symbol),
+                                    "error": str(compat_exc),
+                                },
+                            )
+                        else:
+                            if changes > 0:
+                                logger.warning(
+                                    "alert_schema_hotfix_applied_on_write",
+                                    extra={
+                                        "event": "alert_schema_hotfix_applied_on_write",
+                                        "chat_id": chat_id,
+                                        "symbol": str(symbol),
+                                        "changes": changes,
+                                    },
+                                )
+                                continue
+                    raise RuntimeError("Alerts DB schema is outdated - run: alembic upgrade head") from exc
+                raise RuntimeError("Alert creation unavailable (database error).") from exc
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                logger.exception(
+                    "alert_create_unexpected_failed",
+                    extra={"event": "alert_create_unexpected_failed", "chat_id": chat_id, "symbol": str(symbol), "error": str(exc)},
+                )
+                raise RuntimeError("Alert creation failed (internal error).") from exc
 
     async def _get_alert_price(self, alert: Alert) -> tuple[float | None, dict]:
         if self.market_router and alert.source_exchange and alert.instrument_id:

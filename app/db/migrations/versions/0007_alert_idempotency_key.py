@@ -11,11 +11,17 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "alerts",
-        sa.Column("idempotency_key", sa.String(64), nullable=True),
-    )
-    op.create_index("ix_alerts_idempotency_key", "alerts", ["idempotency_key"], unique=True)
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    columns = {str(col["name"]) for col in inspector.get_columns("alerts")}
+    indexes = {str(idx["name"]) for idx in inspector.get_indexes("alerts")}
+    if "idempotency_key" not in columns:
+        op.add_column(
+            "alerts",
+            sa.Column("idempotency_key", sa.String(64), nullable=True),
+        )
+    if "ix_alerts_idempotency_key" not in indexes:
+        op.create_index("ix_alerts_idempotency_key", "alerts", ["idempotency_key"], unique=True)
 
 
 def downgrade() -> None:

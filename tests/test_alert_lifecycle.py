@@ -5,8 +5,11 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from app.core.enums import AlertStatus
+from app.db.compat import is_alert_schema_issue
+from app.db.models import Alert
 from app.services.alerts import AlertsService
 
 # ---------------------------------------------------------------------------
@@ -169,3 +172,80 @@ async def test_idempotency_key_returns_existing_alert() -> None:
 
     returned = await svc.create_alert(42, "BTC", "above", 100_000.0, idempotency_key="idem-abc")
     assert returned.id == 99
+
+
+def test_is_alert_schema_issue_detects_sqlite_style_missing_column() -> None:
+    exc = OperationalError(
+        "INSERT INTO alerts (...) VALUES (...)",
+        {},
+        Exception("table alerts has no column named source_exchange"),
+    )
+
+    assert is_alert_schema_issue(exc) is True
+
+
+@pytest.mark.asyncio
+async def test_create_alert_retries_after_schema_hotfix(monkeypatch: pytest.MonkeyPatch) -> None:
+    cache = AsyncMock()
+    cache.incr_with_expiry = AsyncMock(return_value=1)
+
+    price_adapter = AsyncMock()
+    price_adapter.get_price = AsyncMock(
+        return_value={
+            "price": 99_000.0,
+            "exchange": "binance",
+            "instrument_id": "BTCUSDT",
+            "market_kind": "spot",
+        }
+    )
+
+    user = _make_user()
+    attempts = {"count": 0}
+
+    @asynccontextmanager
+    async def db():
+        attempts["count"] += 1
+        session = AsyncMock()
+        if attempts["count"] == 1:
+            session.execute = AsyncMock(
+                side_effect=OperationalError(
+                    "INSERT INTO alerts (...) VALUES (...)",
+                    {},
+                    Exception("table alerts has no column named source_exchange"),
+                )
+            )
+            yield session
+            return
+
+        async def execute(*args, **kwargs):
+            result = MagicMock()
+            result.scalar_one_or_none.return_value = user
+            return result
+
+        def add(obj):
+            if isinstance(obj, Alert):
+                obj.id = 123
+
+        session.execute = AsyncMock(side_effect=execute)
+        session.add = MagicMock(side_effect=add)
+        session.commit = AsyncMock()
+        session.refresh = AsyncMock()
+        yield session
+
+    repair = AsyncMock(return_value=1)
+    monkeypatch.setattr("app.services.alerts.ensure_alert_schema_compat", repair)
+
+    svc = AlertsService(
+        db_factory=db,
+        cache=cache,
+        price_adapter=price_adapter,
+        market_router=None,
+        alerts_limit_per_day=10,
+        cooldown_minutes=30,
+    )
+
+    alert = await svc.create_alert(42, "BTC", "above", 100_000.0)
+
+    assert alert.id == 123
+    assert attempts["count"] == 2
+    repair.assert_awaited_once()
