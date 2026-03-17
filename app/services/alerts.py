@@ -5,6 +5,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.adapters.market_router import MarketDataRouter
@@ -69,34 +70,48 @@ class AlertsService:
             except Exception as exc:
                 logger.warning("alert_price_fetch_failed", extra={"event": "alert_price_fetch_failed", "symbol": symbol, "error": str(exc)})
 
-        async with self.db_factory() as session:
-            # Return existing alert if an idempotency key is provided and already used
-            if idempotency_key:
-                existing_q = await session.execute(
-                    select(Alert).where(Alert.idempotency_key == idempotency_key)
-                )
-                existing = existing_q.scalar_one_or_none()
-                if existing is not None:
-                    return existing
+        try:
+            async with self.db_factory() as session:
+                # Return existing alert if an idempotency key is provided and already used
+                if idempotency_key:
+                    existing_q = await session.execute(select(Alert).where(Alert.idempotency_key == idempotency_key))
+                    existing = existing_q.scalar_one_or_none()
+                    if existing is not None:
+                        return existing
 
-            user = await self._get_or_create_user(session, chat_id)
-            alert = Alert(
-                user_id=user.id,
-                symbol=symbol.upper(),
-                condition=condition,
-                target_price=target_price,
-                status=AlertStatus.ACTIVE,
-                source=source,
-                source_exchange=(quote or {}).get("exchange"),
-                instrument_id=(quote or {}).get("instrument_id"),
-                market_kind=(quote or {}).get("market_kind") or "spot",
-                conditions_json=extra_conditions or None,
-                idempotency_key=idempotency_key or None,
+                user = await self._get_or_create_user(session, chat_id)
+                alert = Alert(
+                    user_id=user.id,
+                    symbol=str(symbol).upper(),
+                    condition=condition,
+                    target_price=target_price,
+                    status=AlertStatus.ACTIVE,
+                    source=source,
+                    source_exchange=(quote or {}).get("exchange"),
+                    instrument_id=(quote or {}).get("instrument_id"),
+                    market_kind=(quote or {}).get("market_kind") or "spot",
+                    conditions_json=extra_conditions or None,
+                    idempotency_key=idempotency_key or None,
+                )
+                session.add(alert)
+                await session.commit()
+                await session.refresh(alert)
+                return alert
+        except SQLAlchemyError as exc:
+            msg = str(exc).lower()
+            logger.exception(
+                "alert_create_db_failed",
+                extra={"event": "alert_create_db_failed", "chat_id": chat_id, "symbol": str(symbol), "error": str(exc)},
             )
-            session.add(alert)
-            await session.commit()
-            await session.refresh(alert)
-            return alert
+            if "does not exist" in msg and "column" in msg:
+                raise RuntimeError("Alerts DB schema is outdated (migrations pending).") from exc
+            raise RuntimeError("Alert creation unavailable (database error).") from exc
+        except Exception as exc:
+            logger.exception(
+                "alert_create_unexpected_failed",
+                extra={"event": "alert_create_unexpected_failed", "chat_id": chat_id, "symbol": str(symbol), "error": str(exc)},
+            )
+            raise RuntimeError("Alert creation failed (internal error).") from exc
 
     async def _get_alert_price(self, alert: Alert) -> tuple[float | None, dict]:
         if self.market_router and alert.source_exchange and alert.instrument_id:
