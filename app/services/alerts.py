@@ -114,7 +114,7 @@ class AlertsService:
                 or ("undefined" in exc_type and ("column" in msg or "table" in msg))
             )
             if is_schema_issue:
-                raise RuntimeError("Alerts DB schema is outdated — run: alembic upgrade head") from exc
+                raise RuntimeError("Alerts DB schema is outdated - run: alembic upgrade head") from exc
             raise RuntimeError("Alert creation unavailable (database error).") from exc
         except Exception as exc:
             logger.exception(

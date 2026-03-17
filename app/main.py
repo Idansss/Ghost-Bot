@@ -118,7 +118,12 @@ async def _sync_bot_commands(bot: Bot) -> None:
 
 
 async def _ensure_alert_schema_compat() -> None:
-    """Hot-fix missing alert source columns on older DBs."""
+    """Best-effort hot-fix for older `alerts` schema.
+
+    This is intentionally conservative: it only adds missing columns/indexes that are
+    required for the runtime to function, without attempting destructive changes.
+    Operators should still run Alembic migrations for the full schema.
+    """
     try:
         async with AsyncSessionLocal() as session:
             bind = session.get_bind()
@@ -130,7 +135,10 @@ async def _ensure_alert_schema_compat() -> None:
                 text(
                     "SELECT column_name FROM information_schema.columns "
                     "WHERE table_schema='public' AND table_name='alerts' "
-                    "AND column_name IN ('source_exchange','instrument_id','market_kind')"
+                    "AND column_name IN ("
+                    "'source_exchange','instrument_id','market_kind',"
+                    "'conditions_json','idempotency_key'"
+                    ")"
                 )
             )
             existing = {str(row[0]) for row in result.all()}
@@ -141,11 +149,27 @@ async def _ensure_alert_schema_compat() -> None:
                 stmts.append("ALTER TABLE alerts ADD COLUMN instrument_id VARCHAR(40)")
             if "market_kind" not in existing:
                 stmts.append("ALTER TABLE alerts ADD COLUMN market_kind VARCHAR(10)")
+            if "conditions_json" not in existing:
+                stmts.append("ALTER TABLE alerts ADD COLUMN conditions_json JSONB")
+            if "idempotency_key" not in existing:
+                stmts.append("ALTER TABLE alerts ADD COLUMN idempotency_key VARCHAR(64)")
 
             for stmt in stmts:
                 await session.execute(text(stmt))
             if stmts:
                 await session.execute(text("CREATE INDEX IF NOT EXISTS ix_alerts_source_exchange ON alerts (source_exchange)"))
+                await session.execute(text("CREATE INDEX IF NOT EXISTS ix_alerts_idempotency_key ON alerts (idempotency_key)"))
+                # Best-effort uniqueness: if duplicates exist, this will fail harmlessly and operators can clean up + run migrations.
+                await session.execute(
+                    text(
+                        "DO $$ BEGIN "
+                        "IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_alerts_idempotency_key') THEN "
+                        "ALTER TABLE alerts ADD CONSTRAINT uq_alerts_idempotency_key UNIQUE (idempotency_key); "
+                        "END IF; "
+                        "EXCEPTION WHEN others THEN "
+                        "END $$;"
+                    )
+                )
                 await session.commit()
                 logger.info(
                     "alert_schema_hotfix_applied",
