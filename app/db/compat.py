@@ -3,42 +3,28 @@ from __future__ import annotations
 from collections.abc import Callable
 from contextlib import AbstractAsyncContextManager
 
-from sqlalchemy import inspect, text
-from sqlalchemy.exc import NoSuchTableError
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-_ALERT_COLUMN_DEFS: dict[str, dict[str, str]] = {
-    "source": {
-        "default": "VARCHAR(50)",
-        "postgresql": "VARCHAR(50)",
-        "sqlite": "TEXT",
-    },
-    "source_exchange": {
-        "default": "VARCHAR(20)",
-        "postgresql": "VARCHAR(20)",
-        "sqlite": "TEXT",
-    },
-    "instrument_id": {
-        "default": "VARCHAR(40)",
-        "postgresql": "VARCHAR(40)",
-        "sqlite": "TEXT",
-    },
-    "market_kind": {
-        "default": "VARCHAR(10)",
-        "postgresql": "VARCHAR(10)",
-        "sqlite": "TEXT",
-    },
-    "conditions_json": {
-        "default": "TEXT",
-        "postgresql": "JSONB",
-        "sqlite": "TEXT",
-    },
-    "idempotency_key": {
-        "default": "VARCHAR(64)",
-        "postgresql": "VARCHAR(64)",
-        "sqlite": "TEXT",
-    },
-}
+# Columns that must exist on the alerts table, in order.
+# Using ADD COLUMN IF NOT EXISTS (PostgreSQL 9.6+) so these are idempotent.
+_ALERT_COLUMNS: list[tuple[str, str]] = [
+    ("source",          "VARCHAR(50)"),
+    ("source_exchange", "VARCHAR(20)"),
+    ("instrument_id",   "VARCHAR(40)"),
+    ("market_kind",     "VARCHAR(10)"),
+    ("conditions_json", "JSONB"),
+    ("idempotency_key", "VARCHAR(64)"),
+]
+
+_ALERT_INDEXES: list[tuple[str, str]] = [
+    # (index_name, CREATE INDEX ... statement)
+    (
+        "ix_alerts_idempotency_key",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_alerts_idempotency_key "
+        "ON alerts (idempotency_key)",
+    ),
+]
 
 
 def _collect_exc_text(exc: BaseException) -> tuple[str, str]:
@@ -57,27 +43,23 @@ def _collect_exc_text(exc: BaseException) -> tuple[str, str]:
         message = str(current).strip()
         if message:
             messages.append(message)
-        orig = getattr(current, "orig", None)
-        if isinstance(orig, BaseException):
-            stack.append(orig)
-        cause = getattr(current, "__cause__", None)
-        if isinstance(cause, BaseException):
-            stack.append(cause)
-        context = getattr(current, "__context__", None)
-        if isinstance(context, BaseException):
-            stack.append(context)
+        for attr in ("orig", "__cause__", "__context__"):
+            child = getattr(current, attr, None)
+            if isinstance(child, BaseException):
+                stack.append(child)
 
     return " | ".join(messages).lower(), " | ".join(type_names).lower()
 
 
 def is_alert_schema_issue(exc: BaseException) -> bool:
     message, exc_types = _collect_exc_text(exc)
+    combined = message + " " + exc_types
     return any(
-        token in message or token in exc_types
+        token in combined
         for token in (
             "undefinedcolumn",
             "undefinedtable",
-            "nosuchtableerror",
+            "nosuchtable",
             "no such column",
             "has no column named",
             "no such table",
@@ -93,31 +75,40 @@ def is_alert_schema_issue(exc: BaseException) -> bool:
 async def ensure_alert_schema_compat(
     db_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
 ) -> int:
-    async with db_factory() as session:
-        conn = await session.connection()
-        dialect = (conn.dialect.name or "").lower()
+    """Add any missing columns/indexes to the alerts table.
 
-        try:
-            existing_columns = await conn.run_sync(
-                lambda sync_conn: {
-                    str(col["name"])
-                    for col in inspect(sync_conn).get_columns("alerts")
-                }
+    Uses ADD COLUMN IF NOT EXISTS (PostgreSQL 9.6+) via raw SQL so it works
+    with asyncpg and any other async driver — no SQLAlchemy reflection needed.
+    Returns number of columns that were missing and added.
+    """
+    async with db_factory() as session:
+        # Query information_schema directly — works with asyncpg, psycopg2, etc.
+        result = await session.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'alerts' AND table_schema = current_schema()"
             )
-        except NoSuchTableError:
+        )
+        existing = {row[0] for row in result.fetchall()}
+
+        if not existing:
+            # Table doesn't exist yet — nothing to patch (migrations will create it)
             return 0
 
-        stmts: list[str] = []
-        for column, ddl_by_dialect in _ALERT_COLUMN_DEFS.items():
-            if column in existing_columns:
-                continue
-            ddl_type = ddl_by_dialect.get(dialect, ddl_by_dialect["default"])
-            stmts.append(f"ALTER TABLE alerts ADD COLUMN {column} {ddl_type}")
+        missing = [col for col, _ in _ALERT_COLUMNS if col not in existing]
 
-        for stmt in stmts:
-            await session.execute(text(stmt))
+        for col_name, col_type in _ALERT_COLUMNS:
+            if col_name not in existing:
+                await session.execute(
+                    text(f"ALTER TABLE alerts ADD COLUMN IF NOT EXISTS {col_name} {col_type}")
+                )
 
-        if stmts:
-            await session.commit()
+        for _idx_name, idx_stmt in _ALERT_INDEXES:
+            try:
+                await session.execute(text(idx_stmt))
+            except Exception:
+                # Index may already exist under a different name — non-fatal
+                await session.rollback()
 
-        return len(stmts)
+        await session.commit()
+        return len(missing)
