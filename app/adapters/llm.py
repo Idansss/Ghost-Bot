@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -80,6 +81,8 @@ MARKET CONTEXT QUESTIONS:
 - Do NOT start your answer with "based on the data provided" or similar AI filler.
 - If you do NOT have current data for the asset the user asked about (e.g. gold, XAUUSDT, a specific alt not in the snapshot): say clearly "I don't have recent data for [that symbol]." Do not give analysis as if you had it. Do not substitute other assets' data.
 - If the user says "outdated price" or "old data": acknowledge it in one sentence, then say the snapshot is the freshest you have or that you don't have newer data. Do not ignore the comment and launch into a long analysis.
+- NEVER tie metals (gold, silver, XAU, XAG) to crypto. Do not say gold moves inverse to crypto, or that it's a crypto safe haven, or predict metals from BTC. If asked about gold/XAU, say you don't track metals and keep it short.
+- "Coins to watch" or watchlist sections: ONLY add them when the user explicitly asks for a watchlist, "what to watch", "what to buy", or "coins to watch". Never add that section unprompted when they ask for a market overview, a single coin question, or general commentary.
 
 BOT FEATURES (when user asks how to use them):
 - Alerts: "alert BTC 100000 above" or tap Create Alert button
@@ -89,7 +92,13 @@ BOT FEATURES (when user asks how to use them):
 
 DEFINITION / CONCEPT QUESTIONS (critical):
 - If the user asks "what is X", "define X", "explain X" (e.g. what is SMC, what is order block, what is FVG, what is TP/SL/DCA, what is liquidity, what is market structure), they want a KNOWLEDGE answer from trading concepts.
-- Answer from your trading knowledge: give a clear definition, core pillars or key points, and a short opinion if relevant. Be direct and educational.
+- Answer from your trading knowledge (no chart required). Use this structure:
+  1) one-line definition
+  2) why it matters (1-2 lines)
+  3) quick example (1-2 lines)
+  4) common mistakes (1-2 bullets)
+  5) one-line takeaway
+- Keep it tight: ~10-14 lines max. Be direct and educational.
 - Do NOT ask for ticker or timeframe. Do NOT say "give me a symbol and I'll map it." They are asking for a concept, not a chart.
 - Examples: SMC = Smart Money Concepts (order blocks, liquidity, BOS/CHOCH, FVGs); FVG = fair value gap; TP/SL = take profit / stop loss. Answer in the same sharp, concise style.
 """
@@ -239,6 +248,58 @@ class LLMClient:
     fallback_api_key: str | None = None   # Grok API key
     fallback_base_url: str | None = None  # Grok base URL
 
+    # Phrases that break Ghost's persona — stripped from all replies
+    _AI_DISCLOSURE_RE = re.compile(
+        r"(?:"
+        r"as an ai(?: language model)?[,.]?\s*"
+        r"|i'?m an ai(?: assistant)?[,.]?\s*"
+        r"|i'?m a(?: language)? model[,.]?\s*"
+        r"|i'?m a bot[,.]?\s*"
+        r"|i am an ai[,.]?\s*"
+        r"|please note that[,.]?\s*"
+        r"|(?:^|\n)note:\s*"
+        r"|disclaimer:\s*"
+        r"|this is not financial advice\.?\s*"
+        r"|not financial advice\.?\s*"
+        r"|i should mention that[,.]?\s*"
+        r"|i want to (clarify|note) that[,.]?\s*"
+        r")",
+        re.IGNORECASE | re.MULTILINE,
+    )
+
+    def _post_process(self, text: str) -> str:
+        """Fix common LLM output artifacts before the text reaches Telegram.
+
+        - Convert **bold** markdown → <b>bold</b>
+        - Convert _italic_ / *italic* markdown → <i>italic</i>
+        - Strip markdown headers (# / ## / ###)
+        - Strip AI self-disclosure phrases that break Ghost persona
+        - Strip markdown code fences that aren't JSON
+        """
+        if not text:
+            return text
+
+        # 1. Markdown headers at line start → keep just the text
+        text = re.sub(r"^#{1,3}\s+", "", text, flags=re.MULTILINE)
+
+        # 2. **bold** → <b>bold</b>  (do before single-asterisk to avoid conflicts)
+        text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
+
+        # 3. __bold__ → <b>bold</b>
+        text = re.sub(r"__(.+?)__", r"<b>\1</b>", text, flags=re.DOTALL)
+
+        # 4. *italic* or _italic_ → <i>italic</i>  (single delimiter, non-greedy)
+        text = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<i>\1</i>", text)
+        text = re.sub(r"(?<!_)_(?!_)(.+?)(?<!_)_(?!_)", r"<i>\1</i>", text)
+
+        # 5. Markdown code fences (```...```) — strip the fences, keep the content
+        text = re.sub(r"```[a-z]*\n?(.*?)```", r"\1", text, flags=re.DOTALL)
+
+        # 6. AI/bot self-disclosure phrases
+        text = self._AI_DISCLOSURE_RE.sub("", text)
+
+        return text.strip()
+
     def _extract_json_payload(self, raw_text: str) -> dict:
         text = (raw_text or "").strip()
         if not text:
@@ -347,16 +408,19 @@ class LLMClient:
         max_tok = max_output_tokens or self.max_output_tokens
         temp = self.temperature if temperature is None else float(temperature)
 
+        raw: str | None = None
+
         # Try primary (Claude)
         try:
-            return await self._call(messages, max_tok, temp)
+            raw = await self._call(messages, max_tok, temp)
         except Exception as exc:
             logger.warning("llm_primary_failed", extra={"model": self.model, "error": str(exc)})
 
         # Fallback (Grok)
-        if self.fallback_model:
+        if raw is None and self.fallback_model:
+            logger.info("llm_using_fallback", extra={"primary": self.model, "fallback": self.fallback_model})
             try:
-                return await self._call(
+                raw = await self._call(
                     messages, max_tok, temp,
                     model=self.fallback_model,
                     api_key=self.fallback_api_key,
@@ -365,7 +429,10 @@ class LLMClient:
             except Exception as exc:
                 logger.warning("llm_fallback_failed", extra={"model": self.fallback_model, "error": str(exc)})
 
-        return "Couldn't reach the brain right now - try again in a sec, fren."
+        if raw is None:
+            return "Couldn't reach the brain right now - try again in a sec, fren."
+
+        return self._post_process(raw)
 
     async def route_message(self, user_text: str) -> dict:
         messages = [

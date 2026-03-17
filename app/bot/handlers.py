@@ -74,6 +74,8 @@ from app.bot.ux import transient_error as ux_transient_error
 from app.core.config import get_settings
 from app.core.container import ServiceHub
 from app.core.fred_persona import ghost as fred
+from app.core.howto import try_answer_howto
+from app.core.knowledge import try_answer_definition
 from app.core.metrics import record_abuse
 from app.core.nlu import (
     COMMON_WORDS_NOT_TICKERS,
@@ -1161,6 +1163,18 @@ async def _llm_market_chat_reply(
     if not cleaned:
         return None
 
+    # Deterministic high-quality knowledge answers when possible.
+    if _is_definition_question(cleaned):
+        kb = try_answer_definition(cleaned)
+        if kb:
+            return kb
+
+    # Deterministic high-quality how-to answers when user asks about the bot/features.
+    if _BOT_META_RE.search(cleaned):
+        howto = try_answer_howto(cleaned)
+        if howto:
+            return howto
+
     style = "wild"
     if settings:
         style = "formal" if settings.get("formal_mode") else str(settings.get("tone_mode", "wild")).lower()
@@ -1190,9 +1204,15 @@ async def _llm_market_chat_reply(
         if h.get("title")
     )
 
-    context_block = ""
+    from datetime import datetime
+    _ts = datetime.now(UTC).strftime("%H:%M UTC")
+
+    context_block = f"[Context as of {_ts}]\n"
     if _is_definition_question(cleaned):
-        context_block += "This is a definition/knowledge question. Answer from trading knowledge only. Do not ask for ticker or timeframe.\n\n"
+        context_block += (
+            "This is a definition/knowledge question. Do NOT use market snapshot/news. "
+            "Answer as: definition → why it matters → example → common mistakes → takeaway.\n\n"
+        )
     if mkt_text:
         context_block += f"Live market snapshot (BTC, ETH, SOL): {mkt_text}\n"
     else:
@@ -1234,41 +1254,22 @@ async def _llm_market_chat_reply(
     length_rule = (
         "Answer in one short sentence only."
         if ultra
-        else "Match length to the question: short question → short answer; open-ended → fuller answer. Paragraphs 3–4 sentences max. Use \"fren\" or \"anon\" once, not every sentence."
+        else "Match length to the question: short question → short answer; open-ended → fuller answer. Paragraphs 3–4 sentences max."
     )
     comm_memory = _build_communication_memory_block(settings)
     prompt = (
         f"{context_block}\n"
         f"{comm_memory}\n\n"
-        "GHOST PERSONA (only when they ask who you are or your personality): "
-        "You are Ghost — sharp, no-nonsense, crypto-native. You tell the truth even when it hurts. Slightly unhinged, unfiltered; not a cheerleader. One short paragraph max.\n\n"
-        "RULES:\n"
-        "- The snapshot above has BTC, ETH, SOL. If 'Requested symbol X' data is provided above, you have price data for that symbol (e.g. from Bybit) — use it and do not say you only have BTC/ETH/SOL. "
-        "Only say \"I don't have recent data for [symbol]\" when that symbol is NOT in the snapshot and NOT listed as 'Requested symbol'. Do not substitute BTC/ETH data for another symbol.\n"
-        "- NEVER tie metals to crypto. Do not say gold/XAU moves inverse to crypto, or is a safe haven when crypto falls, or predict metals from BTC. If they ask about gold or XAU, say you don't link metals to crypto and don't speculate on that; keep the answer short and do not add a 'coins to watch' with XAU context.\n"
-        "- If the user says \"outdated price\" or \"old data\" or \"prices are wrong\": acknowledge it in one short sentence. "
-        "Then either say the snapshot above is the freshest you have, or that you don't have newer data. "
-        "Do NOT ignore the comment and launch into a long analysis. Answer what they said first.\n"
-        "- Otherwise: answer exactly what was asked. Do not divert. Same question later → same kind of answer (with updated data).\n"
+        "CONTEXT RULES:\n"
+        "- If market snapshot says 'not available', do NOT invent prices/levels/news. Keep the answer general and say data isn't available.\n"
+        "- If you mention a number (price/level), it must come from the snapshot or a 'Requested symbol' line above. Otherwise, do not use numbers.\n"
+        "- If 'Requested symbol X: $Y' appears above, you have live price data for X — use it. "
+        "Only say \"I don't have data for [symbol]\" when it's absent from both the snapshot and the 'Requested symbol' line.\n"
+        "- If a 'Coin fundamentals' block is present, use it only for the specific stats asked (cap, supply, ATH, etc). Don't dump the whole block unprompted.\n"
         f"- {length_rule}\n"
-        "- STRUCTURE: One-line summary first, then key points/steps, then optional details. Use line breaks.\n"
-        "- CONFIDENCE: When uncertain or extrapolating, add \"Likely\" or \"(low confidence)\". When data-backed, no need to label.\n"
-        "- NEXT ACTION: End with one short suggested next step or question when helpful (e.g. \"Want a chart for that?\" \"Set an alert?\"). Don't force every time.\n"
-        "- LIMITS: If the request is out of scope (tax/legal advice, guaranteed outcomes), say so in one sentence and suggest what you can do instead.\n"
-        "- For complex or multi-part requests, start with \"You want: [one-line summary].\" then answer.\n"
-        "- Do NOT add any section titled \"coins to watch\" or \"coins to watch right now\" (with or without entry/targets) when the user asks for a general market snapshot, daily overview, \"what are we looking at\", personality/perspectives, or any single-asset question. Only give that section when they explicitly ask for a watchlist, \"what to watch\", \"what to buy\", or \"coins to watch\". Never use the phrase \"coins to watch right now\" as a heading unless they asked for a watchlist.\n"
-        "- If they ask how you were built, who made you, your tech/architecture/codebase/APIs: do NOT answer. One short deflect only (e.g. \"that's classified, anon\" or \"i just read the charts, fren\"). No details.\n"
-        "- When a 'Coin fundamentals' block is present above, use it only to answer questions about that coin's stats (24h high/low, ATH/ATL, market cap, supply, FDV, volume), website, explorers, social links, about, or Fear & Greed. Do not dump the whole block; answer what they asked. If they asked for a full overview, you can summarize key points.\n\n"
-        "TRADING FRAMEWORK (use only when relevant; do not list headings unless the user explicitly asks):\n"
-        "- Market structure: trend vs range, breakouts, key liquidity areas.\n"
-        "- Levels: major support/resistance and supply/demand zones.\n"
-        "- Risk: position sizing, risk/reward, stop placement, max drawdown awareness.\n"
-        "- Psychology: discipline, emotional control, avoiding FOMO/revenge trading.\n"
-        "- Volatility & regime: calm vs explosive conditions; bull, bear, and chop adjustment.\n"
-        "- Execution: order types (market/limit/stop), slippage/spreads, and using higher timeframes for bias with lower timeframes for entries.\n"
-        "- Trade plan & review: clear setup, entry/exit rules, invalidation, journaling, backtesting/forward testing before size.\n"
-        "- Context: fundamentals/catalysts (news, macro, unlocks), on-chain/liquidity/flows, correlations/BTC dominance/indices, and basic security/ops.\n\n"
-        f"User question: {cleaned}\n\n"
+        "- When uncertain, prefix with \"likely\" or \"(low confidence)\". When data-backed, state it directly.\n"
+        "- For out-of-scope requests (tax advice, guaranteed outcomes), say so in one sentence and offer what you can do instead.\n\n"
+        f"User: {cleaned}\n\n"
         "Telegram HTML: <b>bold</b> for coins and key levels, <i>italic</i> for closing line."
     )
 
@@ -1502,19 +1503,21 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
     if intent in {"smalltalk", "market_chat", "general_chat"}:
         with suppress(Exception):
             await message.bot.send_chat_action(chat_id, ChatAction.TYPING)
-        # Always use live-data path — Claude/Grok with market context answers everything better
+        # Bot-meta questions should prefer deterministic how-to answers (more reliable than LLM).
+        if _BOT_META_RE.search(raw_text):
+            howto = try_answer_howto(raw_text)
+            if howto:
+                await message.answer(howto)
+                return True
+            llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
+            await _send_llm_reply(message, llm_reply or smalltalk_reply(settings), settings, user_message=raw_text)
+            return True
+
+        # Otherwise use live-data chat path — best quality for market/general chat.
         llm_reply = await _llm_market_chat_reply(raw_text, settings, chat_id=chat_id)
         if llm_reply:
             await _send_llm_reply(message, llm_reply, settings)
         return True
-        # Bot-meta questions (how-to, features) fall back to plain reply
-        if _BOT_META_RE.search(raw_text):
-            llm_reply = await _llm_fallback_reply(raw_text, settings, chat_id=chat_id)
-            await _send_llm_reply(
-                message, llm_reply or smalltalk_reply(settings), settings, user_message=raw_text
-            )
-            return True
-        return False
 
     if intent == "news_digest":
         limit = max(3, min(_as_int(params.get("limit"), 6), 10))

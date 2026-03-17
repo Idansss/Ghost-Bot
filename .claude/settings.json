@@ -7,7 +7,12 @@
       "Bash(grep -rn \"alembic\\\\|upgrade head\" c:/Users/Admin/Desktop/Ghost_Bot/ --include=*.py --include=*.sh --include=Makefile --include=Dockerfile)",
       "Bash(python -m pytest tests/test_alert_lifecycle.py tests/test_giveaway_race.py tests/test_multi_exchange_fallback.py tests/test_wallet_scan.py -v --tb=short)",
       "Read(//c//**)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Read(//c/Users/Admin/.claude/projects/c--Users-Admin-Desktop-Ghost-Bot/1520db8a-a687-43c0-b6d4-8adfa6bbed69/tool-results/**)",
+      "Bash(python -m pytest tests/test_alert_lifecycle.py tests/test_giveaway_race.py tests/test_multi_exchange_fallback.py tests/test_wallet_scan.py -q)",
+      "Bash(python -c \"from app.core.knowledge import try_answer_definition; print\\(try_answer_definition\\(''what is rsi''\\)\\); print\\(''---''\\); print\\(try_answer_definition\\(''what is funding rate''\\)\\); print\\(''---''\\); print\\(try_answer_definition\\(''what is liquidation''\\)\\)\")",
+      "Bash(python -c \":*)",
+      "Bash(python -m pytest tests/ -q)"
     ]
   }
 }

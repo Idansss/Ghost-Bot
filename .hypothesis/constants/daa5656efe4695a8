@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\core\howto.py
+# hypothesis_version: 6.151.9
+
+['\\bcreate alert\\b', 'alerts_create', 'help_overview', 'not_responding', 'privacy_data', 'webhook_mode']

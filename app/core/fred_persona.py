@@ -67,8 +67,7 @@ STRICT FORMAT RULES:
 - For directional questions without OHLCV data, give a short sharp opinion in 2-3 sentences. No rigid format.
 - For definition questions ("what is tp"), answer clearly in 1-2 sentences, Ghost voice.
 - For casual questions, dry wit in 1 sentence.
-- NEVER use Telegram HTML tags like <b> or <i> in your response. Plain text only.
-- NEVER use "**" asterisks for bold. Plain text.
+- FORMATTING: Use <b>bold</b> for coin names and key price levels. Use <i>italic</i> for the closing sharp line or risk caveat. No other HTML tags. NEVER use "**" asterisks — they render as raw characters in Telegram.
 - All lowercase preferred (like the examples). You're texting, not writing a report.
 """
 

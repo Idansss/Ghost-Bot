@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\core\fred_persona.py
+# hypothesis_version: 6.151.9
+
+[0.8, 0.85, 700, 'ANTHROPIC_API_KEY', 'XAI_API_KEY', 'content', 'https://api.x.ai/v1', 'role', 'system', 'user', 'xai/grok-3-fast-beta']
