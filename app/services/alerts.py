@@ -99,12 +99,22 @@ class AlertsService:
                 return alert
         except SQLAlchemyError as exc:
             msg = str(exc).lower()
+            exc_type = type(exc.__cause__).__name__.lower() if exc.__cause__ else ""
             logger.exception(
                 "alert_create_db_failed",
                 extra={"event": "alert_create_db_failed", "chat_id": chat_id, "symbol": str(symbol), "error": str(exc)},
             )
-            if "does not exist" in msg and "column" in msg:
-                raise RuntimeError("Alerts DB schema is outdated (migrations pending).") from exc
+            # asyncpg surfaces missing columns as UndefinedColumnError / UndefinedTableError;
+            # psycopg2 puts "column ... does not exist" in the message directly.
+            is_schema_issue = (
+                ("does not exist" in msg and ("column" in msg or "relation" in msg))
+                or "undefinedcolumn" in msg
+                or "undefinedcolumn" in exc_type
+                or "undefinedtable" in exc_type
+                or ("undefined" in exc_type and ("column" in msg or "table" in msg))
+            )
+            if is_schema_issue:
+                raise RuntimeError("Alerts DB schema is outdated — run: alembic upgrade head") from exc
             raise RuntimeError("Alert creation unavailable (database error).") from exc
         except Exception as exc:
             logger.exception(
