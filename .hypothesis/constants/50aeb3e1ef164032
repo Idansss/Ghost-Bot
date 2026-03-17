@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\alerts.py
+# hypothesis_version: 6.151.9
+
+[1.0, 30.0, 100.0, 120, 7200, 86400, '1h', 'above', 'alert_id', 'alert_notify_failed', 'below', 'button', 'chat_id', 'ema', 'error', 'event', 'exchange', 'gt', 'gte', 'instrument_id', 'key', 'lt', 'lte', 'market_kind', 'operator', 'period', 'price', 'price_fetch_failed', 'rsi', 'spot', 'symbol', 'timeframe', 'type', 'user', 'value', 'will_retry']

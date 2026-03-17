@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\aiohttp\client_reqrep.py
+# hypothesis_version: 6.151.9
+
+[100, 101, 199, 400, '*/*', ', ', ',(?=\\s*<)', '.', '100-continue', ';', 'CIMultiDict[str]', 'ClientRequest', 'ClientResponse', 'ClientSession', 'Connection', 'Connection closed', 'Fingerprint', 'None', 'RequestInfo', 'SSLContext', 'Trace', 'Unclosed response', '\\s*<(.*)>(.*)', 'application', 'application/json', 'ascii', 'asyncio.Future[bool]', 'asyncio.Task[None]', 'backslashreplace', 'charset', 'chunked', 'client_response', 'close', 'deflate', 'gzip, deflate', 'gzip, deflate, br', 'host', 'https', 'json', 'keep-alive', 'link', 'message', 'peername', 'rdap', 'rel', 'source', 'source_traceback', 'ssl_object', 'sslcontext', 'strict', 'url', 'utf-8', 'wss']

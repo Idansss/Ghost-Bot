@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\ohlcv.py
+# hypothesis_version: 6.151.9
+
+[0.0, 200, '12h', '15m', '1M', '1d', '1h', '1m', '1w', '2h', '30', '30m', '3d', '3m', '4h', '5m', '6h', '7', 'M', 'binance', 'binance_spot', 'candles', 'close', 'coingecko', 'coins', 'days', 'exchange', 'fetched_at', 'high', 'id', 'instrument_id', 'interval', 'limit', 'low', 'market_kind', 'open', 'query', 'source', 'source_line', 'spot', 'symbol', 'ts', 'updated_at', 'usd', 'volume', 'vs_currency']

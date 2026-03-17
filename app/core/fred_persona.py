@@ -4,14 +4,17 @@ import json
 import os
 from typing import Any
 
-from litellm import acompletion
+try:
+    from litellm import acompletion  # type: ignore
+except Exception:  # pragma: no cover
+    acompletion = None  # type: ignore[assignment]
 
 
 class GhostPersona:
     def __init__(self) -> None:
         self.claude_key = os.getenv("ANTHROPIC_API_KEY")
         self.grok_key = os.getenv("XAI_API_KEY")
-        self.enabled = bool(self.claude_key or self.grok_key)
+        self.enabled = bool((self.claude_key or self.grok_key) and acompletion is not None)
 
     SYSTEM_PROMPT = """You are Ghost — a savage, sharp crypto trader who calls everyone "fren" and "anon".
 You are the ghost in the machine. You've seen every cycle, you read order flow like a book, and you have no patience for bad setups.

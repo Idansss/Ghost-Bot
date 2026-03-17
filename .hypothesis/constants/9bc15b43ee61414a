@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\pydantic\dataclasses.py
+# hypothesis_version: 6.151.9
+
+['_T', '__annotations__', '__pydantic_config__', 'dataclass', 'dataclass-on-model', 'default', 'kw_only', 'rebuild_dataclass', 'repr', 'slots']

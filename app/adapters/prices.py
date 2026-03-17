@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.adapters.market_router import MarketDataRouter
 from app.adapters.symbols import coingecko_id_for, normalize_symbol
@@ -36,7 +36,7 @@ class PriceAdapter:
                 "symbol": base,
                 "price": float(price),
                 "source": "test_mode_override",
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
             },
             ttl=30,
         )
@@ -68,7 +68,7 @@ class PriceAdapter:
                 "symbol": meta.base,
                 "price": self.mock_prices_map[meta.base],
                 "source": "test_mode",
-                "ts": datetime.now(timezone.utc).isoformat(),
+                "ts": datetime.now(UTC).isoformat(),
             }
             await self.cache.set_json(key, payload, ttl=5)
             return payload
@@ -84,11 +84,11 @@ class PriceAdapter:
                     "exchange": routed.get("exchange"),
                     "market_kind": routed.get("market_kind"),
                     "instrument_id": routed.get("instrument_id"),
-                    "ts": routed.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+                    "ts": routed.get("updated_at") or datetime.now(UTC).isoformat(),
                 }
                 await self.cache.set_json(key, payload, ttl=15)
                 return payload
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
         else:
             try:
@@ -101,11 +101,11 @@ class PriceAdapter:
                     "exchange": "binance",
                     "market_kind": "spot",
                     "instrument_id": meta.pair,
-                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "ts": datetime.now(UTC).isoformat(),
                 }
                 await self.cache.set_json(key, payload, ttl=15)
                 return payload
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
         cg_id = coingecko_id_for(meta.base)
@@ -131,9 +131,96 @@ class PriceAdapter:
                     "exchange": "coingecko",
                     "market_kind": "spot",
                     "instrument_id": cg_id,
-                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "ts": datetime.now(UTC).isoformat(),
                 }
                 await self.cache.set_json(key, payload, ttl=20)
                 return payload
 
         raise RuntimeError(f"Price unavailable for {meta.base}")
+
+    async def get_prices(self, symbols: list[str]) -> dict[str, dict]:
+        """Best-effort bulk prices keyed by base symbol.
+
+        Uses cache where possible, then a Binance bulk endpoint fallback.
+        """
+        bases = []
+        for s in symbols:
+            base = normalize_symbol(s).base
+            if base and base not in bases:
+                bases.append(base)
+
+        out: dict[str, dict] = {}
+        # cache-first
+        for base in list(bases):
+            cached = await self.cache.get_json(f"price:{base}")
+            if cached:
+                out[base] = cached
+
+        missing = [b for b in bases if b not in out]
+        if not missing:
+            return out
+
+        # test mode overrides
+        if self.test_mode:
+            for base in list(missing):
+                if base in self.mock_prices_map:
+                    payload = {
+                        "symbol": base,
+                        "price": float(self.mock_prices_map[base]),
+                        "source": "test_mode",
+                        "ts": datetime.now(UTC).isoformat(),
+                    }
+                    await self.cache.set_json(f"price:{base}", payload, ttl=5)
+                    out[base] = payload
+            missing = [b for b in missing if b not in out]
+            if not missing:
+                return out
+
+        # try market router per-symbol (keeps best-source behavior)
+        if self.market_router:
+            for base in list(missing):
+                try:
+                    routed = await self.market_router.get_price(base)
+                    payload = {
+                        "symbol": routed["symbol"],
+                        "price": float(routed["price"]),
+                        "source": routed["source"],
+                        "source_line": routed.get("source_line"),
+                        "exchange": routed.get("exchange"),
+                        "market_kind": routed.get("market_kind"),
+                        "instrument_id": routed.get("instrument_id"),
+                        "ts": routed.get("updated_at") or datetime.now(UTC).isoformat(),
+                    }
+                    await self.cache.set_json(f"price:{base}", payload, ttl=15)
+                    out[base] = payload
+                except Exception:
+                    continue
+            missing = [b for b in missing if b not in out]
+            if not missing:
+                return out
+
+        # Binance bulk endpoint returns all prices; filter locally.
+        try:
+            all_rows = await self.http.get_json(f"{self.binance_base}/api/v3/ticker/price")
+            if isinstance(all_rows, list):
+                want_pairs = {normalize_symbol(b).pair: b for b in missing}
+                for row in all_rows:
+                    sym = str(row.get("symbol") or "")
+                    if sym in want_pairs:
+                        base = want_pairs[sym]
+                        payload = {
+                            "symbol": base,
+                            "price": float(row["price"]),
+                            "source": "binance_spot_bulk",
+                            "source_line": f"Data source: Binance Spot ({sym}) | Updated: 0s ago",
+                            "exchange": "binance",
+                            "market_kind": "spot",
+                            "instrument_id": sym,
+                            "ts": datetime.now(UTC).isoformat(),
+                        }
+                        await self.cache.set_json(f"price:{base}", payload, ttl=15)
+                        out[base] = payload
+        except Exception:
+            pass
+
+        return out

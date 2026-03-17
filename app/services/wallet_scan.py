@@ -53,7 +53,7 @@ class WalletScanService:
         try:
             native_price = await self.price.get_price(result["native_symbol"])
             native_usd = result["native_balance"] * float(native_price["price"])
-        except Exception:  # noqa: BLE001
+        except Exception:
             native_usd = None
 
         warnings = self._flag_suspicious(result.get("tokens", []))

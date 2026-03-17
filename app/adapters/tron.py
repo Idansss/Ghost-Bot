@@ -28,7 +28,7 @@ class TronAdapter:
             for contract, amount in row.items():
                 try:
                     parsed_amount = float(amount)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     continue
                 if parsed_amount <= 0:
                     continue
@@ -52,7 +52,7 @@ class TronAdapter:
                 "energy_limit": res.get("EnergyLimit"),
                 "energy_used": res.get("EnergyUsed"),
             }
-        except Exception:  # noqa: BLE001
+        except Exception:
             resources = {}
 
         tx_resp = await self.http.get_json(

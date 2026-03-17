@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.adapters.market_router import MarketDataRouter
 from app.adapters.news_sources import NewsSourcesAdapter
+from app.adapters.prices import PriceAdapter
 from app.core.http import ResilientHTTPClient
 
 
@@ -14,11 +15,13 @@ class WatchlistService:
         news_adapter: NewsSourcesAdapter,
         market_router: MarketDataRouter,
         coingecko_base: str,
+        price_adapter: PriceAdapter | None = None,
         include_btc_eth: bool = True,
     ) -> None:
         self.http = http
         self.news_adapter = news_adapter
         self.market_router = market_router
+        self.price_adapter = price_adapter
         self.coingecko_base = coingecko_base
         self.include_btc_eth = include_btc_eth
 
@@ -48,7 +51,7 @@ class WatchlistService:
                 filtered.sort(key=lambda x: abs(x["change"]), reverse=True)
             if filtered:
                 return filtered
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
         try:
@@ -62,7 +65,7 @@ class WatchlistService:
                         "volume": 0.0,
                     }
                 )
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
         return filtered
@@ -100,6 +103,19 @@ class WatchlistService:
                     break
             items.append(f"{symbol} ({row.get('change', 0.0):+.2f}% 24h) - {catalyst}")
 
+        # Optional: attach a quick live price line using bulk prices (reduces API calls).
+        if self.price_adapter and picked:
+            bases = [str(r.get("symbol") or "").upper() for r in picked[:count]]
+            prices = await self.price_adapter.get_prices(bases)
+            priced_items = []
+            for line, base in zip(items, bases, strict=False):
+                px = prices.get(base, {}).get("price")
+                if px is not None:
+                    priced_items.append(f"{line} | ${float(px):,.4f}")
+                else:
+                    priced_items.append(line)
+            items = priced_items
+
         if direction == "short":
             themes = [
                 "Short-side watchlist: focusing on stretched movers with mean-reversion risk.",
@@ -121,5 +137,5 @@ class WatchlistService:
             "items": items,
             "direction": direction,
             "source_line": "Data source: multi-exchange spot router | Updated: just now",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }

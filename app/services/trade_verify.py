@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 
@@ -29,7 +29,7 @@ class TradeVerifyService:
             raise RuntimeError("No candles available")
         source_line = str(candles[-1].get("source_line") or "") if candles else ""
 
-        ts_ms = int(timestamp.astimezone(timezone.utc).timestamp() * 1000)
+        ts_ms = int(timestamp.astimezone(UTC).timestamp() * 1000)
         active = df[df["ts"] >= ts_ms].copy()
         if active.empty:
             raise RuntimeError("No candles available after the provided timestamp")

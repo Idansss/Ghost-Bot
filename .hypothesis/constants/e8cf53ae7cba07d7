@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\ema_scanner.py
+# hypothesis_version: 6.151.9
+
+[0.0, 100.0, 100, 120, 180, 200, 220, 240, 300, 500, 1500, '4h', 'USDT', 'above', 'below', 'close', 'closest', 'distance_pct', 'ema', 'ema_length', 'ema_universe_error', 'error', 'event', 'items', 'live_fallback', 'mode', 'precomputed', 'price', 'quoteVolume', 'side', 'source_line', 'spot', 'summary', 'symbol', 'timeframe', 'updated_at']

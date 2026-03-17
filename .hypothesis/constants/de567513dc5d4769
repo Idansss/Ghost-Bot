@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\gdpr.py
+# hypothesis_version: 6.151.9
+
+['address', 'alerts', 'chain', 'condition', 'created_at', 'entry', 'entry_price', 'exit_price', 'id', 'label', 'last_seen_at', 'leverage', 'notes', 'outcome', 'pnl_quote', 'positions', 'settings', 'side', 'size_quote', 'status', 'symbol', 'target_price', 'telegram_chat_id', 'trade_journal', 'wallets']

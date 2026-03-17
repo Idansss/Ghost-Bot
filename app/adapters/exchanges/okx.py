@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import ClassVar
 
-from app.adapters.exchanges.utils import resolve_timeframe, resample_ohlcv
+from app.adapters.exchanges.utils import resample_ohlcv, resolve_timeframe
 from app.core.cache import RedisCache
 from app.core.http import ResilientHTTPClient
 
@@ -11,7 +12,7 @@ class OKXExchangeAdapter:
     name = "okx"
     label = "OKX"
 
-    _TF_MAP = {
+    _TF_MAP: ClassVar[dict[str, str]] = {
         "1m": "1m",
         "3m": "3m",
         "5m": "5m",
@@ -26,8 +27,8 @@ class OKXExchangeAdapter:
         "3d": "3D",
         "1w": "1W",
     }
-    SPOT_TIMEFRAMES = set(_TF_MAP.keys())
-    PERP_TIMEFRAMES = SPOT_TIMEFRAMES.copy()
+    SPOT_TIMEFRAMES: ClassVar[set[str]] = set(_TF_MAP.keys())
+    PERP_TIMEFRAMES: ClassVar[set[str]] = SPOT_TIMEFRAMES.copy()
 
     def __init__(self, http: ResilientHTTPClient, cache: RedisCache, base_url: str, instruments_ttl_sec: int = 2700) -> None:
         self.http = http
@@ -81,7 +82,7 @@ class OKXExchangeAdapter:
         if not rows:
             raise RuntimeError(f"OKX ticker unavailable for {instrument_id}")
         row = rows[0]
-        return {"price": float(row.get("last")), "ts": datetime.now(timezone.utc).isoformat()}
+        return {"price": float(row.get("last")), "ts": datetime.now(UTC).isoformat()}
 
     async def get_ohlcv(self, instrument_id: str, timeframe: str, limit: int, market_kind: str = "spot") -> list[dict]:
         supported = self.SPOT_TIMEFRAMES if market_kind == "spot" else self.PERP_TIMEFRAMES
@@ -132,7 +133,7 @@ class OKXExchangeAdapter:
         row = rows[0]
         bids = [[float(p), float(q)] for p, q, *_ in row.get("bids", [])]
         asks = [[float(p), float(q)] for p, q, *_ in row.get("asks", [])]
-        return {"bids": bids, "asks": asks, "ts": datetime.now(timezone.utc).isoformat()}
+        return {"bids": bids, "asks": asks, "ts": datetime.now(UTC).isoformat()}
 
     async def get_funding_oi(self, instrument_id: str) -> dict | None:
         funding_payload = await self.http.get_json(
@@ -150,14 +151,14 @@ class OKXExchangeAdapter:
         if funding_rows:
             try:
                 funding = float(funding_rows[0].get("fundingRate"))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 funding = None
         if oi_rows:
             try:
                 oi = float(oi_rows[0].get("oi"))
-            except Exception:  # noqa: BLE001
+            except Exception:
                 oi = None
-        return {"funding_rate": funding, "open_interest": oi, "ts": datetime.now(timezone.utc).isoformat()}
+        return {"funding_rate": funding, "open_interest": oi, "ts": datetime.now(UTC).isoformat()}
 
     async def get_spot_tickers_24h(self) -> list[dict]:
         payload = await self.http.get_json(f"{self.base_url}/api/v5/market/tickers", params={"instType": "SPOT"})
@@ -181,6 +182,6 @@ class OKXExchangeAdapter:
                         "price": last,
                     }
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
         return out

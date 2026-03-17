@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\coin_info.py
+# hypothesis_version: 6.151.9
+
+[100, 200, 300, 500, 2000, 3600, '...', '/', '<[^>]+>', '\\s+', 'about', 'ath', 'atl', 'blockchain_site', 'cg_id', 'circulating_supply', 'classification', 'coin_info:fear_greed', 'coingecko_id', 'coins', 'community_data', 'data', 'description', 'developer_data', 'discord', 'en', 'error', 'explorers', 'facebook', 'facebook_username', 'false', 'fdv', 'high_24h', 'homepage', 'id', 'links', 'localization', 'low_24h', 'market_cap', 'market_cap_fdv_ratio', 'market_data', 'max_supply', 'name', 'query', 'reddit', 'social', 'subreddit_url', 'symbol', 'telegram', 'tickers', 'total_supply', 'total_volume', 'treasury_holdings', 'twitter', 'twitter_screen_name', 'usd', 'value', 'value_classification', 'website']

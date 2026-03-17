@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\discovery.py
+# hypothesis_version: 6.151.9
+
+[1e-09, 0.2, 2.0, 250, 300, 600, '$', 'TRADING', 'USDT', 'baseAsset', 'binance', 'binance:bases', 'coingecko_search', 'coins', 'current_price', 'diff_abs', 'diff_rel', 'exchange', 'false', 'instrument_id', 'market_cap_desc', 'matches', 'name', 'order', 'page', 'pair', 'per_page', 'price', 'query', 'quoteAsset', 'source', 'sparkline', 'spot', 'status', 'summary', 'symbol', 'symbols', 'target_price', 'tradable_binance', 'updated_at', 'usd', 'vs_currency']

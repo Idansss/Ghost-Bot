@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any
 
@@ -279,14 +279,12 @@ COMMON_WORDS_NOT_TICKERS = {
     "had",
     "go",
     "going",
-    "think",
     "know",
     "see",
     "look",
     "like",
     "use",
     "used",
-    "recover",
     "recover",
     "hitting",
     "heading",
@@ -295,7 +293,6 @@ COMMON_WORDS_NOT_TICKERS = {
     "feels",
     "seem",
     "seems",
-    "think",
     "guess",
     "reckon",
     "believe",
@@ -396,7 +393,6 @@ COMMON_WORDS_NOT_TICKERS = {
     "mooning",
     "dip",
     "dipping",
-    "dump",
     "dumping",
     "weak",
     "strong",
@@ -643,7 +639,6 @@ def is_likely_english_phrase(text: str) -> bool:
         return True
 
     # Questions ending with "?" that start with conversational words
-    stripped_lower = text.strip().rstrip("!?.,")
     if text.strip().endswith("?"):
         question_starters = {"will", "should", "is", "are", "can", "could", "would", "do", "does", "did"}
         if words and words[0] in question_starters:
@@ -685,7 +680,7 @@ def parse_duration_token(text: str) -> str | None:
 
 
 def parse_timestamp(text: str, now: datetime | None = None) -> datetime | None:
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     lower = text.lower()
 
     iso_match = re.search(r"\b(\d{4}-\d{2}-\d{2}(?:[t\s]\d{2}:\d{2}(?::\d{2})?)?)\b", text)
@@ -694,8 +689,8 @@ def parse_timestamp(text: str, now: datetime | None = None) -> datetime | None:
         try:
             dt = datetime.fromisoformat(value)
             if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc)
+                dt = dt.replace(tzinfo=UTC)
+            return dt.astimezone(UTC)
         except ValueError:
             pass
 
@@ -912,23 +907,13 @@ def parse_message(text: str) -> ParsedMessage:
 
     has_structured_tool_phrase = bool(
         re.search(
-            r"\b(news|headline|update|overbought|oversold|rsi|ema|chart|heatmap|orderbook|depth|"
-            r"alert|watchlist|scan|wallet|cycle|correlation|tradecheck|pair|price guess)\b",
+            r"\b(news|headline|headlines|update|updates|overbought|oversold|rsi|ema|chart|heatmap|orderbook|depth|"
+            r"alert|alerts|watchlist|coins?\s+to\s+watch|coin\s+to\s+(?:long|short)|scan|wallet|cycle|"
+            r"bull\s+market\s+top|correlation|tradecheck|rr|r:r|risk\s*reward|risk/reward|pnl|margin|leverage|"
+            r"pair|find|price\s+guess|around|near|about|long|short)\b",
             lower,
         )
     )
-    if (
-        is_likely_english_phrase(stripped)
-        and not lower.startswith("/")
-        and not ENGLISH_PHRASE_EXCLUDE_RE.search(lower)
-        and not has_structured_tool_phrase
-    ):
-        return ParsedMessage(
-            Intent.UNKNOWN,
-            {},
-            True,
-            "Give me a ticker + direction (`SOL long`) if you want a setup, or keep chatting.",
-        )
 
     if lower.startswith("/alert list") or "list alerts" in lower:
         return ParsedMessage(Intent.ALERT_LIST)
@@ -1178,7 +1163,7 @@ def parse_message(text: str) -> ParsedMessage:
         if not entities["targets"]:
             return ParsedMessage(Intent.TRADECHECK, entities, True, "Add at least one target price.")
         if not entities["timestamp"]:
-            entities["timestamp"] = datetime.now(timezone.utc) - timedelta(days=1)
+            entities["timestamp"] = datetime.now(UTC) - timedelta(days=1)
         return ParsedMessage(Intent.TRADECHECK, entities)
 
     setup_signal = bool(re.search(r"\b(entry|stop|sl|targets?|tp\d*|limit)\b", lower))
@@ -1274,14 +1259,47 @@ def parse_message(text: str) -> ParsedMessage:
         target = prices[0] if prices else None
         if not symbol or target is None:
             return ParsedMessage(Intent.ALERT_CREATE, {}, True, "Give symbol + level, e.g. `SOL above 100`.")
-        return ParsedMessage(Intent.ALERT_CREATE, {"symbol": symbol, "condition": condition, "target_price": target})
+
+        # Parse extra AND-conditions: "AND rsi 1h > 60", "AND ema200 1h above", etc.
+        extra_conditions: list = []
+        for m in re.finditer(
+            r"\band\s+(?:(rsi)\s*(\d+[mhd])?\s*(>|<|>=|<=)\s*(\d+(?:\.\d+)?)"
+            r"|(ema)\s*(\d+)\s*(\d+[mhd])?\s*(above|below))",
+            lower,
+        ):
+            if m.group(1) == "rsi":
+                op_str = m.group(3)
+                op_map = {">": "gt", "<": "lt", ">=": "gte", "<=": "lte"}
+                tf_raw = m.group(2) or "1h"
+                extra_conditions.append({
+                    "type": "rsi",
+                    "timeframe": tf_raw,
+                    "operator": op_map.get(op_str, "gt"),
+                    "value": float(m.group(4)),
+                })
+            elif m.group(5) == "ema":
+                period = int(m.group(6))
+                tf_raw = m.group(7) or "1h"
+                op_dir = m.group(8) or "above"
+                extra_conditions.append({
+                    "type": "ema",
+                    "period": period,
+                    "timeframe": tf_raw,
+                    "operator": op_dir,
+                })
+
+        entities: dict = {"symbol": symbol, "condition": condition, "target_price": target}
+        if extra_conditions:
+            entities["extra_conditions"] = extra_conditions
+        return ParsedMessage(Intent.ALERT_CREATE, entities)
 
     symbol_tf_hint = bool(parse_timeframe(lower) and len(_extract_symbols(stripped)) >= 1)
     # Only treat as analysis if the message is NOT a natural-language question.
     # This stops "where do you think BTC next leg is?" from routing to ANALYSIS.
     _is_english = is_likely_english_phrase(stripped) and not ENGLISH_PHRASE_EXCLUDE_RE.search(lower)
+    analysis_strong = bool(re.search(r"\b(long|short)\b|what'?s happening with", lower))
     analysis_hint = (
-        not _is_english
+        (not _is_english or analysis_strong)
         and (
             bool(
                 re.search(
@@ -1344,6 +1362,22 @@ def parse_message(text: str) -> ParsedMessage:
                 "include_derivatives": include_derivatives,
                 "notes": notes,
             },
+        )
+
+    # Guardrail: if it's conversational English and nothing matched, keep it in UNKNOWN with a helpful prompt.
+    if (
+        is_likely_english_phrase(stripped)
+        and not lower.startswith("/")
+        and not ENGLISH_PHRASE_EXCLUDE_RE.search(lower)
+        and not has_structured_tool_phrase
+        and not _extract_symbols(stripped)
+        and not re.search(r"\d", lower)
+    ):
+        return ParsedMessage(
+            Intent.UNKNOWN,
+            {},
+            True,
+            "Give me a ticker + direction (`SOL long`) if you want a setup, or keep chatting.",
         )
 
     if lower.startswith("/"):

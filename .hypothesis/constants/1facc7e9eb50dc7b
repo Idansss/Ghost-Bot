@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\prices.py
+# hypothesis_version: 6.151.9
+
+[',', ':', 'binance', 'binance_spot', 'binance_spot_bulk', 'coingecko', 'coins', 'exchange', 'id', 'ids', 'instrument_id', 'market_kind', 'price', 'query', 'source', 'source_line', 'spot', 'symbol', 'test_mode', 'test_mode_override', 'ts', 'updated_at', 'usd', 'vs_currencies']

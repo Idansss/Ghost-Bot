@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\users.py
+# hypothesis_version: 6.151.9
+
+[200, '1h', 'UTC', 'anon_mode', 'binance', 'communication_style', 'disclaimer_seen', 'display_name', 'feedback_prefs', 'formal_mode', 'friendly', 'last_symbols', 'light', 'medium', 'preferred_exchange', 'preferred_timeframe', 'preferred_timeframes', 'profanity_level', 'reply_in_dm', 'risk_profile', 'timezone', 'tone_mode', 'trading_goals', 'ultra_brief', 'wild']

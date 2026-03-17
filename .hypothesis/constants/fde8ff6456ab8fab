@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\exchanges\__init__.py
+# hypothesis_version: 6.151.9
+
+['BybitExchangeAdapter', 'MEXCExchangeAdapter', 'OKXExchangeAdapter']

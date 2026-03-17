@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urlsplit, urlunsplit
 
 from app.core.fmt import fmt_price, safe_html, strip_html_tags
@@ -135,11 +135,11 @@ def relative_updated(ts_iso: str | None) -> str:
         return ""
     try:
         then = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
-        now = datetime.now(timezone.utc)
-        delta = now - then.astimezone(timezone.utc)
+        now = datetime.now(UTC)
+        delta = now - then.astimezone(UTC)
         minutes = int(delta.total_seconds() // 60)
         return f"updated {minutes}m ago"
-    except Exception:  # noqa: BLE001
+    except Exception:
         return ts_iso
 
 
@@ -149,7 +149,7 @@ def _clean_url(raw: str) -> str:
     try:
         parts = urlsplit(raw)
         return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
-    except Exception:  # noqa: BLE001
+    except Exception:
         return raw
 
 
@@ -248,7 +248,7 @@ def news_template(payload: dict) -> str:
         url = _clean_url(item.get("url", ""))
         lines.append(f"<b>{idx}. {title}</b>")
         if url and url != "n/a":
-            lines.append(f'<i>{source}</i> · <a href="{url}">read →</a>')
+            lines.append(f'<i>{source}</i> · Link: <a href="{url}">read →</a>')
         else:
             lines.append(f"<i>{source}</i>")
         lines.append("")
@@ -496,7 +496,6 @@ def setup_review_template(payload: dict, settings: dict) -> str:
     rr_best   = float(payload.get("rr_best", 0) or 0)
     stop_atr  = float(payload.get("stop_atr", 0) or 0)
     entry_ctx = safe_html(str(payload.get("entry_context", "")))
-    stop_note = safe_html(str(payload.get("stop_note", "")))
     support   = payload.get("support")
     resistance = payload.get("resistance")
 

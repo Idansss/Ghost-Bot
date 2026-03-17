@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\sqlalchemy\dialects\postgresql\named_types.py
+# hypothesis_version: 6.151.9
+
+['DOMAIN', '_adapted_from', '_create_events', '_ddl_runner', 'check', 'constraint_name', 'create_domain_type', 'create_enum_type', 'create_type', 'default', 'drop_domain_type', 'drop_enum_type', 'inherit_schema', 'metadata', 'name', 'native_enum', 'not_null', 'omit_aliases', 'schema', 'validate_strings', 'values_callable']

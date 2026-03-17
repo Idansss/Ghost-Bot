@@ -139,11 +139,11 @@ def candles_are_sane(candles: list[dict]) -> bool:
         ts = int(row.get("ts", 0) or 0)
         o = float(row.get("open", 0) or 0)
         h = float(row.get("high", 0) or 0)
-        l = float(row.get("low", 0) or 0)
+        low = float(row.get("low", 0) or 0)
         c = float(row.get("close", 0) or 0)
-        if ts <= 0 or o <= 0 or h <= 0 or l <= 0 or c <= 0:
+        if ts <= 0 or o <= 0 or h <= 0 or low <= 0 or c <= 0:
             return False
-        if h < l:
+        if h < low:
             return False
         if prev_ts and ts <= prev_ts:
             return False

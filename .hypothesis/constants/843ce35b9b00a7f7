@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\pydantic\_internal\_typing_extra.py
+# hypothesis_version: 6.151.9
+
+['(\\w+\\.)?ClassVar\\[', '<module>', 'ClassVar', 'Final', 'Literal', 'Self', '__annotations__', '__dict__', '__globals__', '__module__', '__no_type_check__', '__supertype__', '__type_params__', '__wrapped__', '_fields', '_name', '_strip_annotations', 'deprecated', 'return', 'test_new_type']

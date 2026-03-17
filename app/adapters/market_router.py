@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.adapters.exchanges import (
     BinanceExchangeAdapter,
@@ -160,7 +160,7 @@ class MarketDataRouter:
         return normalize_symbol(symbol).base
 
     async def _acquire_exchange_token(self, exchange: str) -> None:
-        key = f"ex:rate:{exchange}:{int(datetime.now(timezone.utc).timestamp())}"
+        key = f"ex:rate:{exchange}:{int(datetime.now(UTC).timestamp())}"
         count = await self.cache.incr_with_expiry(key, ttl=2)
         if count > 12:
             await asyncio.sleep(0.12)
@@ -171,7 +171,7 @@ class MarketDataRouter:
     async def _best_source_set(self, symbol: str, market_kind: str, exchange: str, instrument_id: str) -> None:
         await self.cache.set_json(
             f"best_source:{symbol}:{market_kind}",
-            {"exchange": exchange, "instrument_id": instrument_id, "ts": datetime.now(timezone.utc).isoformat()},
+            {"exchange": exchange, "instrument_id": instrument_id, "ts": datetime.now(UTC).isoformat()},
             ttl=self.best_source_ttl_sec,
         )
 
@@ -196,7 +196,7 @@ class MarketDataRouter:
     async def _resolve_instrument(self, exchange: str, symbol: str, market_kind: str) -> str | None:
         try:
             markets = await self._markets(exchange, market_kind)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
         inst = markets.get(symbol)
         if inst:
@@ -231,13 +231,13 @@ class MarketDataRouter:
     def _relative_updated(self, ts_iso: str) -> str:
         try:
             then = datetime.fromisoformat(ts_iso.replace("Z", "+00:00"))
-            now = datetime.now(timezone.utc)
-            secs = max(0, int((now - then.astimezone(timezone.utc)).total_seconds()))
+            now = datetime.now(UTC)
+            secs = max(0, int((now - then.astimezone(UTC)).total_seconds()))
             if secs < 60:
                 return f"{secs}s ago"
             mins = secs // 60
             return f"{mins}m ago"
-        except Exception:  # noqa: BLE001
+        except Exception:
             return ts_iso
 
     def _kinds_for_market_data(self) -> list[str]:
@@ -306,7 +306,7 @@ class MarketDataRouter:
                         price = float(payload["price"])
                         if price <= 0:
                             raise RuntimeError("non_positive_price")
-                        updated_at = str(payload.get("ts") or datetime.now(timezone.utc).isoformat())
+                        updated_at = str(payload.get("ts") or datetime.now(UTC).isoformat())
                         await self.cache.set_json(cache_key, {"price": price, "ts": updated_at}, ttl=self.price_ttl)
                         await self._best_source_set(base, kind, ex, inst)
                         fallback_from = first_exchange if first_exchange and ex != first_exchange else None
@@ -328,7 +328,7 @@ class MarketDataRouter:
                             updated_at=updated_at,
                             fallback_from=fallback_from,
                         ).to_dict()
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         errors.append(f"{ex}:{kind}:{exc}")
                         continue
         raise RuntimeError(f"Price unavailable for {base}; tried {', '.join(errors[:6])}")
@@ -350,7 +350,7 @@ class MarketDataRouter:
                     if isinstance(cached, dict) and isinstance(cached.get("candles"), list):
                         candles = cached.get("candles", [])
                         if candles_are_sane(candles):
-                            updated_at = str(cached.get("updated_at") or datetime.now(timezone.utc).isoformat())
+                            updated_at = str(cached.get("updated_at") or datetime.now(UTC).isoformat())
                             fallback_from = first_exchange if first_exchange and ex != first_exchange else None
                             line = self._source_line(
                                 exchange=ex,
@@ -377,7 +377,7 @@ class MarketDataRouter:
                         candles = await self.adapters[ex].get_ohlcv(inst, tf, lim, market_kind=kind)
                         if not candles_are_sane(candles):
                             raise RuntimeError("invalid_candles")
-                        updated_at = datetime.now(timezone.utc).isoformat()
+                        updated_at = datetime.now(UTC).isoformat()
                         await self.cache.set_json(
                             cache_key,
                             {"candles": candles, "updated_at": updated_at},
@@ -404,7 +404,7 @@ class MarketDataRouter:
                             updated_at=updated_at,
                             fallback_from=fallback_from,
                         ).to_dict()
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         errors.append(f"{ex}:{kind}:{exc}")
                         continue
         raise RuntimeError(f"OHLCV unavailable for {base} {tf}; tried {', '.join(errors[:6])}")
@@ -419,7 +419,7 @@ class MarketDataRouter:
                 cache_key = f"orderbook:{ex}:{kind}:{inst}:{depth}"
                 cached = await self.cache.get_json(cache_key)
                 if isinstance(cached, dict) and cached.get("bids") and cached.get("asks"):
-                    updated_at = str(cached.get("updated_at") or datetime.now(timezone.utc).isoformat())
+                    updated_at = str(cached.get("updated_at") or datetime.now(UTC).isoformat())
                     fallback_from = first_exchange if first_exchange and ex != first_exchange else None
                     line = self._source_line(
                         exchange=ex,
@@ -448,7 +448,7 @@ class MarketDataRouter:
                     asks = payload.get("asks", [])
                     if not bids or not asks:
                         raise RuntimeError("empty_orderbook")
-                    updated_at = str(payload.get("ts") or datetime.now(timezone.utc).isoformat())
+                    updated_at = str(payload.get("ts") or datetime.now(UTC).isoformat())
                     await self.cache.set_json(
                         cache_key,
                         {"bids": bids, "asks": asks, "updated_at": updated_at},
@@ -475,7 +475,7 @@ class MarketDataRouter:
                         updated_at=updated_at,
                         fallback_from=fallback_from,
                     ).to_dict()
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     errors.append(f"{ex}:{kind}:{exc}")
                     continue
         raise RuntimeError(f"Orderbook unavailable for {base}; tried {', '.join(errors[:6])}")
@@ -489,7 +489,7 @@ class MarketDataRouter:
                 payload = await self.adapters[ex].get_funding_oi(inst)
                 if not payload:
                     continue
-                updated_at = str(payload.get("ts") or datetime.now(timezone.utc).isoformat())
+                updated_at = str(payload.get("ts") or datetime.now(UTC).isoformat())
                 await self._best_source_set(base, "perp", ex, inst)
                 fallback_from = first_exchange if first_exchange and ex != first_exchange else None
                 line = self._source_line(
@@ -515,7 +515,7 @@ class MarketDataRouter:
                     updated_at=updated_at,
                     fallback_from=fallback_from,
                 ).to_dict()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
         return None
 
@@ -524,7 +524,7 @@ class MarketDataRouter:
         for ex in self.priority:
             try:
                 markets = await self._markets(ex, market_kind)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
             out.update(markets.keys())
         return out
@@ -536,7 +536,7 @@ class MarketDataRouter:
                 continue
             try:
                 rows = await adapter.get_spot_tickers_24h()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
             if rows:
                 for row in rows:

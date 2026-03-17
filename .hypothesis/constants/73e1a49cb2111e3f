@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\tron.py
+# hypothesis_version: 6.151.9
+
+[1000000, '...', '/', 'EnergyLimit', 'EnergyUsed', 'TRON-PRO-API-KEY', 'TRX', 'address', 'amount', 'balance', 'block_timestamp', 'block_timestamp,desc', 'chain', 'contract', 'contractRet', 'data', 'energy_limit', 'energy_used', 'freeNetLimit', 'free_net_limit', 'limit', 'native_balance', 'native_symbol', 'order_by', 'raw_data', 'recent_transactions', 'resources', 'ret', 'symbol', 'time', 'tokens', 'trc20', 'tron', 'txID', 'txid', 'type', 'visible']

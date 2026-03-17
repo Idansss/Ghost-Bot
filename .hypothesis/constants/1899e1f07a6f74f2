@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\core\enums.py
+# hypothesis_version: 6.151.9
+
+['active', 'ended_no_winner', 'paused', 'triggered']

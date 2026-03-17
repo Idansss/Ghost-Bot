@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 from sqlalchemy import select
@@ -57,7 +57,7 @@ class EMAScannerService:
 
         try:
             rows = await self.http.get_json(f"{self.binance_base}/api/v3/ticker/24hr")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("ema_universe_fetch_failed", extra={"event": "ema_universe_error", "error": str(exc)})
             return await self._symbols_from_db(universe_size)
 
@@ -68,7 +68,7 @@ class EMAScannerService:
                 continue
             try:
                 quote_vol = float(row.get("quoteVolume", 0) or 0)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 quote_vol = 0.0
             if quote_vol <= 0:
                 continue
@@ -98,7 +98,7 @@ class EMAScannerService:
         if ema_field is None:
             return []
 
-        freshness_cutoff = datetime.now(timezone.utc) - timedelta(minutes=self.freshness_minutes)
+        freshness_cutoff = datetime.now(UTC) - timedelta(minutes=self.freshness_minutes)
         async with self.db_factory() as session:
             query = await session.execute(
                 select(
@@ -148,7 +148,7 @@ class EMAScannerService:
     async def _symbol_ema(self, symbol: str, timeframe: str, ema_length: int) -> dict | None:
         try:
             candles = await self.ohlcv_adapter.get_ohlcv(symbol, timeframe=timeframe, limit=max(ema_length * 3, 220))
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
         if len(candles) < ema_length + 5:
             return None
@@ -224,7 +224,7 @@ class EMAScannerService:
             "mode": mode_norm,
             "items": items,
             "source_line": "Multi-exchange snapshots",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
         for row in items:
             if row.get("source_line"):

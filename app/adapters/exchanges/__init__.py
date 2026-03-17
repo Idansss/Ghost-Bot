@@ -6,8 +6,8 @@ from app.adapters.exchanges.okx import OKXExchangeAdapter
 
 __all__ = [
     "BinanceExchangeAdapter",
-    "BybitExchangeAdapter",
-    "OKXExchangeAdapter",
-    "MEXCExchangeAdapter",
     "BloFinExchangeAdapter",
+    "BybitExchangeAdapter",
+    "MEXCExchangeAdapter",
+    "OKXExchangeAdapter",
 ]

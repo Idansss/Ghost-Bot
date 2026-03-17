@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\openai\_streaming.py
+# hypothesis_version: 6.151.9
+
+[b'\n\n', b'\r\n\r\n', b'\r\r', '\x00', ':', '[DONE]', '_T', 'data', 'error', 'event', 'id', 'message', 'retry', 'thread.', 'tuple[type, ...]', 'utf-8']

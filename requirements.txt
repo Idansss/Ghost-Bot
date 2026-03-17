@@ -17,6 +17,19 @@ orjson==3.10.12
 pytest==8.3.4
 pytest-asyncio==0.24.0
 respx==0.22.0
+hypothesis==6.131.0
 openai>=1.0.0
-litellm==1.81.13
+# NOTE (Windows): litellm wheels may exceed Windows MAX_PATH due to bundled proxy assets.
+# Use it on non-Windows (prod) by default; OpenAI-only mode works without it.
+litellm==1.81.13; platform_system != "Windows"
 Pillow==11.0.0
+prometheus-client==0.22.1
+opentelemetry-api==1.33.1
+opentelemetry-sdk==1.33.1
+opentelemetry-exporter-otlp==1.33.1
+opentelemetry-instrumentation==0.54b1
+opentelemetry-instrumentation-fastapi==0.54b1
+opentelemetry-instrumentation-httpx==0.54b1
+ruff==0.13.2
+mypy==1.18.2
+pre-commit==4.3.0

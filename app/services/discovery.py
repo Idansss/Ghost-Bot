@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.adapters.market_router import MarketDataRouter
 from app.adapters.prices import PriceAdapter
@@ -57,7 +57,7 @@ class DiscoveryService:
                 "query": raw,
                 "summary": "No close pair matches found.",
                 "matches": [],
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
             }
 
         bases = await self._binance_bases()
@@ -75,7 +75,7 @@ class DiscoveryService:
                 price_payload = await self.price_adapter.get_price(symbol)
                 price = float(price_payload["price"])
                 source = price_payload.get("source", source)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
             out.append(
                 {
@@ -93,7 +93,7 @@ class DiscoveryService:
             "query": raw,
             "summary": "Closest symbol matches found.",
             "matches": out[:limit],
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
 
     async def guess_by_price(self, target_price: float, limit: int = 10) -> dict:
@@ -136,7 +136,7 @@ class DiscoveryService:
                 continue
             try:
                 price_f = float(price)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
             diff_abs = abs(price_f - target_price)
             diff_rel = diff_abs / max(target_price, 1e-9)
@@ -160,5 +160,5 @@ class DiscoveryService:
             "target_price": target_price,
             "summary": f"Closest coins near ${target_price:.6g}.",
             "matches": matches,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }

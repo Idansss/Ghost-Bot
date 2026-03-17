@@ -116,7 +116,7 @@ class BroadcastService:
             )
             try:
                 text = await self.llm_client.reply(prompt, max_output_tokens=220, temperature=0.6)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 text = ""
             cleaned = (text or "").strip()
             if cleaned:
@@ -140,7 +140,7 @@ class BroadcastService:
 
         try:
             market_context = await self.analysis_service.get_market_context()
-        except Exception:  # noqa: BLE001
+        except Exception:
             market_context = {}
         commentary = await self._build_commentary(triggers, market_context if isinstance(market_context, dict) else {})
 
@@ -149,6 +149,6 @@ class BroadcastService:
             try:
                 await bot.send_message(chat_id=chat_id, text=commentary)
                 sent += 1
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
         return sent

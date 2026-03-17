@@ -1,5 +1,4 @@
 from functools import lru_cache
-from typing import List
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,6 +36,13 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://ghost:ghost@postgres:5432/ghost_bot"
     redis_url: str = "redis://redis:6379/0"
+
+    # Outbound HTTP resilience policy (used by ResilientHTTPClient)
+    http_timeout_sec: float = Field(default=10.0, alias="HTTP_TIMEOUT_SEC")
+    http_retries: int = Field(default=3, alias="HTTP_RETRIES")
+    http_backoff_base_sec: float = Field(default=0.4, alias="HTTP_BACKOFF_BASE_SEC")
+    http_breaker_threshold: int = Field(default=4, alias="HTTP_BREAKER_THRESHOLD")
+    http_breaker_cooldown_sec: int = Field(default=60, alias="HTTP_BREAKER_COOLDOWN_SEC")
 
     binance_base_url: str = "https://api.binance.com"
     binance_futures_base_url: str = "https://fapi.binance.com"
@@ -78,6 +84,12 @@ class Settings(BaseSettings):
     alerts_create_limit_per_day: int = 10
     alert_max_deviation_pct: float = Field(default=30.0, alias="ALERT_MAX_DEVIATION_PCT")
 
+    # Abuse protection (Redis-backed). When a user repeatedly violates rate limits,
+    # they can be temporarily blocked to protect the bot from spam/flooding.
+    abuse_strikes_to_block: int = Field(default=6, alias="ABUSE_STRIKES_TO_BLOCK")
+    abuse_strike_window_sec: int = Field(default=300, alias="ABUSE_STRIKE_WINDOW_SEC")
+    abuse_block_ttl_sec: int = Field(default=3600, alias="ABUSE_BLOCK_TTL_SEC")
+
     alert_check_interval_sec: int = 30
     alert_cooldown_min: int = 30
     admin_chat_ids: str = ""
@@ -107,14 +119,20 @@ class Settings(BaseSettings):
     max_position_notional_warning_usd: float = Field(default=100_000.0, alias="MAX_POSITION_NOTIONAL_WARNING_USD")
     analysis_requests_per_day: int = Field(default=100, alias="ANALYSIS_REQUESTS_PER_DAY")
 
-    def rss_feed_list(self) -> List[str]:
+    # OpenTelemetry (optional)
+    otel_enabled: bool = Field(default=False, alias="OTEL_ENABLED")
+    otel_service_name: str = Field(default="ghost-bot", alias="OTEL_SERVICE_NAME")
+    otel_exporter_otlp_endpoint: str = Field(default="", alias="OTEL_EXPORTER_OTLP_ENDPOINT")
+    otel_exporter_otlp_headers: str = Field(default="", alias="OTEL_EXPORTER_OTLP_HEADERS")
+
+    def rss_feed_list(self) -> list[str]:
         return [x.strip() for x in self.news_rss_feeds.split(";") if x.strip()]
 
-    def openai_rss_feed_list(self) -> List[str]:
+    def openai_rss_feed_list(self) -> list[str]:
         return [x.strip() for x in self.openai_rss_feeds.split(";") if x.strip()]
 
-    def admin_ids_list(self) -> List[int]:
-        out: List[int] = []
+    def admin_ids_list(self) -> list[int]:
+        out: list[int] = []
         for item in self.admin_chat_ids.split(","):
             raw = item.strip()
             if not raw:
@@ -125,16 +143,16 @@ class Settings(BaseSettings):
                 continue
         return out
 
-    def analysis_default_timeframes_list(self) -> List[str]:
-        out: List[str] = []
+    def analysis_default_timeframes_list(self) -> list[str]:
+        out: list[str] = []
         for item in self.analysis_default_timeframes.split(","):
             tf = item.strip()
             if tf:
                 out.append(tf)
         return out or ["1h"]
 
-    def broadcast_channel_ids_list(self) -> List[int]:
-        out: List[int] = []
+    def broadcast_channel_ids_list(self) -> list[int]:
+        out: list[int] = []
         for item in self.broadcast_channel_ids.split(","):
             raw = item.strip()
             if not raw:
@@ -145,8 +163,8 @@ class Settings(BaseSettings):
                 continue
         return out
 
-    def rsi_scan_timeframes_list(self) -> List[str]:
-        out: List[str] = []
+    def rsi_scan_timeframes_list(self) -> list[str]:
+        out: list[str] = []
         for item in self.rsi_scan_scan_timeframes.split(","):
             tf = item.strip()
             if tf:
@@ -156,7 +174,29 @@ class Settings(BaseSettings):
     def feature_flags_set(self) -> set:
         return {x.strip().lower() for x in self.feature_flags.split(",") if x.strip()}
 
+    def validate_for_env(self) -> None:
+        """Fail fast on missing critical configuration in staging/prod."""
+        env = (self.env or "").lower()
+        if env not in {"staging", "prod", "production"}:
+            return
+
+        missing: list[str] = []
+        if not self.telegram_bot_token:
+            missing.append("TELEGRAM_BOT_TOKEN")
+        if not self.database_url:
+            missing.append("DATABASE_URL")
+        if not self.redis_url:
+            missing.append("REDIS_URL")
+        # In prod, cron endpoints must be protected.
+        if not self.cron_secret:
+            missing.append("CRON_SECRET")
+
+        if missing:
+            raise RuntimeError(f"Missing required settings for {env}: {', '.join(missing)}")
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    s = Settings()
+    s.validate_for_env()
+    return s

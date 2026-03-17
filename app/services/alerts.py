@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.adapters.market_router import MarketDataRouter
 from app.adapters.prices import PriceAdapter
 from app.core.cache import RedisCache
-from app.db.models import Alert, User
+from app.core.enums import AlertStatus
+from app.db.models import Alert, IndicatorSnapshot, User
+from app.domain.alerts import condition_met, extra_condition_met, parse_extra_conditions
 
 logger = logging.getLogger(__name__)
 
@@ -38,15 +40,15 @@ class AlertsService:
         q = await session.execute(select(User).where(User.telegram_chat_id == chat_id))
         user = q.scalar_one_or_none()
         if user:
-            user.last_seen_at = datetime.now(timezone.utc)
+            user.last_seen_at = datetime.now(UTC)
             return user
         user = User(telegram_chat_id=chat_id, settings_json={})
         session.add(user)
         await session.flush()
         return user
 
-    async def create_alert(self, chat_id: int, symbol: str, condition: str, target_price: float, source: str = "user") -> Alert:
-        daily_key = f"rl:alerts:{chat_id}:{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+    async def create_alert(self, chat_id: int, symbol: str, condition: str, target_price: float, source: str = "user", extra_conditions: list | None = None, idempotency_key: str | None = None) -> Alert:
+        daily_key = f"rl:alerts:{chat_id}:{datetime.now(UTC).strftime('%Y%m%d')}"
         count = await self.cache.incr_with_expiry(daily_key, 86400)
         if count > self.alerts_limit_per_day:
             raise RuntimeError("Daily alert creation limit reached.")
@@ -64,21 +66,32 @@ class AlertsService:
                         )
             except RuntimeError:
                 raise
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:
+                logger.warning("alert_price_fetch_failed", extra={"event": "alert_price_fetch_failed", "symbol": symbol, "error": str(exc)})
 
         async with self.db_factory() as session:
+            # Return existing alert if an idempotency key is provided and already used
+            if idempotency_key:
+                existing_q = await session.execute(
+                    select(Alert).where(Alert.idempotency_key == idempotency_key)
+                )
+                existing = existing_q.scalar_one_or_none()
+                if existing is not None:
+                    return existing
+
             user = await self._get_or_create_user(session, chat_id)
             alert = Alert(
                 user_id=user.id,
                 symbol=symbol.upper(),
                 condition=condition,
                 target_price=target_price,
-                status="active",
+                status=AlertStatus.ACTIVE,
                 source=source,
                 source_exchange=(quote or {}).get("exchange"),
                 instrument_id=(quote or {}).get("instrument_id"),
                 market_kind=(quote or {}).get("market_kind") or "spot",
+                conditions_json=extra_conditions or None,
+                idempotency_key=idempotency_key or None,
             )
             session.add(alert)
             await session.commit()
@@ -97,8 +110,8 @@ class AlertsService:
                         "instrument_id": alert.instrument_id,
                         "market_kind": alert.market_kind or "spot",
                     }
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:
+                    logger.debug("alert_direct_price_failed", extra={"alert_id": alert.id, "exchange": ex, "error": str(exc)})
 
         try:
             fallback = await self.price_adapter.get_price(alert.symbol)
@@ -107,7 +120,8 @@ class AlertsService:
                 "instrument_id": fallback.get("instrument_id"),
                 "market_kind": fallback.get("market_kind") or "spot",
             }
-        except Exception:  # noqa: BLE001
+        except Exception as exc:
+            logger.warning("alert_fallback_price_failed", extra={"alert_id": alert.id, "symbol": alert.symbol, "error": str(exc)})
             return None, {}
 
     async def list_alerts(self, chat_id: int) -> list[Alert]:
@@ -116,7 +130,7 @@ class AlertsService:
                 select(Alert)
                 .join(User, User.id == Alert.user_id)
                 .where(User.telegram_chat_id == chat_id)
-                .where(Alert.status.in_(["active", "paused"]))
+                .where(Alert.status.in_([AlertStatus.ACTIVE, AlertStatus.PAUSED]))
                 .order_by(Alert.created_at.desc())
             )
             return list(q.scalars().all())
@@ -155,19 +169,10 @@ class AlertsService:
             await session.commit()
             return len(alerts)
 
-    def _condition_met(self, condition: str, target: float, prev_price: float, current_price: float) -> bool:
-        if condition == "above":
-            return prev_price < target <= current_price
-        if condition == "below":
-            return prev_price > target >= current_price
-        crossed_up = prev_price < target <= current_price
-        crossed_down = prev_price > target >= current_price
-        return crossed_up or crossed_down
-
     async def process_alerts(self, notifier) -> int:
         triggered_count = 0
         async with self.db_factory() as session:
-            q = await session.execute(select(Alert).where(Alert.status == "active"))
+            q = await session.execute(select(Alert).where(Alert.status == AlertStatus.ACTIVE))
             alerts = list(q.scalars().all())
             if not alerts:
                 return 0
@@ -186,7 +191,7 @@ class AlertsService:
 
             symbol_prices: dict[str, float] = {}
             symbol_source: dict[str, dict] = {}
-            for key, result in zip(unique_keys.keys(), fetch_results):
+            for key, result in zip(unique_keys.keys(), fetch_results, strict=False):
                 if isinstance(result, Exception) or result is None:
                     logger.warning("price_fetch_failed", extra={"key": key, "error": str(result)})
                     continue
@@ -195,7 +200,7 @@ class AlertsService:
                     symbol_prices[key] = float(price_value)
                     symbol_source[key] = source_info
 
-            now = datetime.now(timezone.utc)
+            now = datetime.now(UTC)
             for alert in alerts:
                 key = f"{alert.symbol}:{alert.source_exchange}:{alert.instrument_id}:{alert.market_kind}"
                 if key not in symbol_prices:
@@ -215,14 +220,67 @@ class AlertsService:
                 if alert.cooldown_until and alert.cooldown_until > now_naive:
                     continue
 
-                if not self._condition_met(alert.condition, alert.target_price, prev_price, current_price):
+                if not condition_met(
+                    condition=alert.condition,
+                    target=float(alert.target_price),
+                    prev_price=float(prev_price),
+                    current_price=float(current_price),
+                ):
                     continue
+
+                # Evaluate extra AND-conditions (RSI, EMA, etc.)
+                extras = parse_extra_conditions(alert.conditions_json)
+                if extras:
+                    all_met = True
+                    for extra in extras:
+                        tf = str(extra.get("timeframe", "1h"))
+                        snap_q = await session.execute(
+                            select(IndicatorSnapshot)
+                            .where(
+                                IndicatorSnapshot.symbol == alert.symbol,
+                                IndicatorSnapshot.timeframe == tf,
+                            )
+                            .order_by(IndicatorSnapshot.computed_at.desc())
+                            .limit(1)
+                        )
+                        snap = snap_q.scalar_one_or_none()
+                        if not extra_condition_met(cond=extra, snapshot=snap, current_price=float(current_price)):
+                            all_met = False
+                            break
+                    if not all_met:
+                        continue
 
                 dedupe_key = f"alert:dedupe:{alert.id}:{now.strftime('%Y%m%d%H%M')}"
                 if not await self.cache.set_if_absent(dedupe_key, ttl=120):
                     continue
 
-                alert.status = "triggered"
+                user_q = await session.execute(select(User).where(User.id == alert.user_id))
+                user = user_q.scalar_one_or_none()
+
+                # Attempt delivery before marking triggered.
+                # If delivery fails, keep alert active — the dedupe key (TTL=120s)
+                # prevents immediate re-trigger; it will retry on the next cycle.
+                notify_ok = False
+                if user:
+                    direction_word = "above" if alert.condition == "above" else "below"
+                    msg = (
+                        f"🔔 <b>{alert.symbol}</b> just crossed <b>${alert.target_price:,.2f}</b> {direction_word}, fren.\n"
+                        f"trading at <b>${current_price:,.2f}</b> right now. you set this one — go check the chart."
+                    )
+                    try:
+                        await notifier(user.telegram_chat_id, msg, symbol=alert.symbol)
+                        notify_ok = True
+                    except Exception as exc:
+                        logger.warning(
+                            "alert_notify_failed",
+                            extra={"alert_id": alert.id, "chat_id": user.telegram_chat_id, "error": str(exc), "will_retry": True},
+                        )
+
+                if not notify_ok:
+                    # Don't mark triggered — retry after dedupe key expires (~2 min)
+                    continue
+
+                alert.status = AlertStatus.TRIGGERED
                 alert.triggered_at = now_naive
                 alert.cooldown_until = now_naive + timedelta(minutes=self.cooldown_minutes)
                 alert.last_triggered_price = current_price
@@ -234,19 +292,6 @@ class AlertsService:
                 if src.get("market_kind"):
                     alert.market_kind = str(src.get("market_kind"))
                 triggered_count += 1
-
-                user_q = await session.execute(select(User).where(User.id == alert.user_id))
-                user = user_q.scalar_one_or_none()
-                if user:
-                    direction_word = "above" if alert.condition == "above" else "below"
-                    msg = (
-                        f"🔔 <b>{alert.symbol}</b> just crossed <b>${alert.target_price:,.2f}</b> {direction_word}, fren.\n"
-                        f"trading at <b>${current_price:,.2f}</b> right now. you set this one — go check the chart."
-                    )
-                    try:
-                        await notifier(user.telegram_chat_id, msg, symbol=alert.symbol)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("alert_notify_failed", extra={"chat_id": user.telegram_chat_id, "error": str(exc)})
 
             await session.commit()
 
@@ -278,7 +323,7 @@ class AlertsService:
             return count
 
     async def pause_user_alerts(self, chat_id: int) -> int:
-        return await self._set_user_alert_status(chat_id, "paused")
+        return await self._set_user_alert_status(chat_id, AlertStatus.PAUSED)
 
     async def resume_user_alerts(self, chat_id: int) -> int:
-        return await self._set_user_alert_status(chat_id, "active")
+        return await self._set_user_alert_status(chat_id, AlertStatus.ACTIVE)

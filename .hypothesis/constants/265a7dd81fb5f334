@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\application\usecases.py
+# hypothesis_version: 6.151.9
+
+[200, 900, 1800, 5000, '1h', '4h', 'alert_create', 'alert_delete', 'alert_list', 'alert_pause', 'alert_resume', 'all_emas', 'all_rsis', 'all_timeframes', 'analysis', 'binance-only', 'busy', 'cached', 'chat_id', 'closest', 'crypto', 'ema_intent_error', 'ema_periods', 'ema_scan', 'error', 'event', 'headlines', 'include_derivatives', 'include_news', "isn't supported", 'news', 'news_digest_failed', 'no valid ohlcv', 'notes', 'ok', 'oversold', 'price unavailable', 'rsi_intent_error', 'rsi_periods', 'rsi_scan', 'symbol', 'timeframe', 'timeframes', 'unavailable', 'unsupported', 'user']

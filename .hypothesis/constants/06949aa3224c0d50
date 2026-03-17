@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\orderbook_heatmap.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1e-08, 0.0001, 0.5, 0.98, 1.0, 1.02, 2.0, 100, 130, 140, 150, 160, 170, 210, 220, 230, 235, 240, 250, 320, 500, 1300, 'Asks', 'Bids', 'PNG', 'RGB', 'ask_wall', 'asks', 'best_ask', 'best_bid', 'bid_wall', 'bids', 'exchange', 'instrument_id', 'market_kind', 'mid', 'pair', 'source_line']

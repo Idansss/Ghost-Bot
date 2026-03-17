@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\httpx\_config.py
+# hypothesis_version: 6.151.9
+
+[5.0, 100, '!DSS', '!MD5', '!aNULL', '!eNULL', '********', ':', 'DH+AES', 'DH+AESGCM', 'DHE+AESGCM', 'DHE+CHACHA20', 'ECDH+AES', 'ECDH+AESGCM', 'ECDHE+AESGCM', 'ECDHE+CHACHA20', 'Limits', 'Proxy', 'RSA+AES', 'RSA+AESGCM', 'SSLKEYLOGFILE', 'Timeout', 'connect', 'create_ssl_context', 'h2', 'http', 'http/1.1', 'https', 'httpx', 'pool', 'read', 'socks5', 'utf-8', 'write']

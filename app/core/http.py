@@ -70,7 +70,7 @@ class ResilientHTTPClient:
                 response.raise_for_status()
                 self._record_success(host)
                 return response.json()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 last_error = exc
                 self._record_failure(host)
                 if attempt >= self.retries:
@@ -105,7 +105,7 @@ class ResilientHTTPClient:
                 response.raise_for_status()
                 self._record_success(host)
                 return response.text
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 last_error = exc
                 self._record_failure(host)
                 if attempt >= self.retries:

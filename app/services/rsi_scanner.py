@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 from sqlalchemy import delete, select
@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert
 from app.adapters.market_router import MarketDataRouter
 from app.adapters.ohlcv import OHLCVAdapter
 from app.core.cache import RedisCache
+from app.core.errors import UpstreamError
 from app.core.http import ResilientHTTPClient
 from app.core.ta import ema, rsi
 from app.db.models import IndicatorSnapshot, UniverseSymbol
@@ -79,17 +80,25 @@ class RSIScannerService:
                 pages = max(1, min((cap // page_size) + 2, 6))
                 markets: list[dict] = []
                 for page in range(1, pages + 1):
-                    chunk = await self.http.get_json(
-                        f"{self.coingecko_base}/coins/markets",
-                        params={
-                            "vs_currency": "usd",
-                            "order": "market_cap_desc",
-                            "per_page": page_size,
-                            "page": page,
-                            "sparkline": "false",
-                        },
-                    )
-                    markets.extend(list(chunk))
+                    try:
+                        chunk = await self.http.get_json(
+                            f"{self.coingecko_base}/coins/markets",
+                            params={
+                                "vs_currency": "usd",
+                                "order": "market_cap_desc",
+                                "per_page": page_size,
+                                "page": page,
+                                "sparkline": "false",
+                            },
+                        )
+                        markets.extend(list(chunk))
+                    except UpstreamError as exc:
+                        # Circuit is open or CoinGecko is down — stop paging, use what we have.
+                        logger.warning(
+                            "rsi_coingecko_page_failed",
+                            extra={"event": "rsi_coingecko_page_failed", "page": page, "error": str(exc)},
+                        )
+                        break
                 scored: list[dict] = []
                 for row in markets:
                     sym = str(row.get("symbol", "")).upper()
@@ -104,12 +113,12 @@ class RSIScannerService:
                     symbols = scored[:cap]
                     await self.cache.set_json(cache_key, symbols, ttl=300)
                     return symbols
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("rsi_coingecko_universe_failed", extra={"event": "rsi_universe_error", "error": str(exc)})
 
         try:
             rows = await self.http.get_json(f"{self.binance_base}/api/v3/ticker/24hr")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("rsi_universe_fetch_failed", extra={"event": "rsi_universe_error", "error": str(exc)})
             return await self._top_symbols_from_db(cap)
 
@@ -120,7 +129,7 @@ class RSIScannerService:
                 continue
             try:
                 quote_vol = float(row.get("quoteVolume", 0) or 0)
-            except Exception:  # noqa: BLE001
+            except (TypeError, ValueError):
                 quote_vol = 0.0
             if quote_vol <= 0:
                 continue
@@ -208,7 +217,8 @@ class RSIScannerService:
     async def _symbol_rsi(self, symbol: str, timeframe: str, rsi_length: int) -> dict | None:
         try:
             candles = await self.ohlcv_adapter.get_ohlcv(symbol, timeframe=timeframe, limit=max(180, rsi_length * 8))
-        except Exception:  # noqa: BLE001
+        except Exception as exc:
+            logger.debug("rsi_ohlcv_failed", extra={"symbol": symbol, "tf": timeframe, "error": str(exc)})
             return None
         if len(candles) < rsi_length + 5:
             return None
@@ -228,7 +238,8 @@ class RSIScannerService:
     async def _symbol_snapshot(self, symbol: str, timeframe: str) -> dict | None:
         try:
             candles = await self.ohlcv_adapter.get_ohlcv(symbol, timeframe=timeframe, limit=260)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:
+            logger.debug("snapshot_ohlcv_failed", extra={"symbol": symbol, "tf": timeframe, "error": str(exc)})
             return None
         if len(candles) < 60:
             return None
@@ -278,7 +289,7 @@ class RSIScannerService:
         return len(rows)
 
     def _due_timeframes(self, now: datetime | None = None) -> list[str]:
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         epoch_minute = int(now.timestamp() // 60)
         due: list[str] = []
         for tf in self.scan_timeframes:
@@ -312,9 +323,9 @@ class RSIScannerService:
         semaphore = asyncio.Semaphore(self.concurrency)
 
         for tf in tfs:
-            async def _one(sym: str) -> dict | None:
+            async def _one(sym: str, _tf: str = tf) -> dict | None:
                 async with semaphore:
-                    return await self._symbol_snapshot(sym, tf)
+                    return await self._symbol_snapshot(sym, _tf)
 
             computed = await asyncio.gather(*[_one(sym) for sym in symbols], return_exceptions=False)
             rows = [row for row in computed if row]
@@ -409,18 +420,16 @@ class RSIScannerService:
         mode_norm = "overbought" if mode.lower() == "overbought" else "oversold"
         cap = max(1, min(limit, 20))
         rsi_length = max(2, min(int(rsi_length), 50))
-        source = "precomputed"
 
         if symbol:
             row = await self._symbol_rsi(symbol.upper(), tf, rsi_length)
             items = [row] if row else []
-            source = "live_symbol"
         else:
             items = []
             if rsi_length == 14 and tf in self.scan_timeframes:
                 try:
                     items = await self._query_precomputed(tf, mode_norm, cap)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.warning("rsi_precomputed_query_failed", extra={"event": "rsi_query_error", "error": str(exc)})
                     items = []
                 # When precomputed is empty or thin, use live scan with a small universe so we respond in seconds.
@@ -429,11 +438,10 @@ class RSIScannerService:
                     items = await self._scan_live_universe(
                         tf, mode_norm, cap, rsi_length, max_symbols=45
                     )
-                    if items:
-                        source = "live_fallback"
+                    # source tracking is only for internal debugging; don't mutate it here
             if not items:
                 items = await self._scan_live_universe(tf, mode_norm, cap, rsi_length)
-                source = "live_fallback"
+                # source tracking is only for internal debugging; don't mutate it here
 
         ranked = []
         for row in items[:cap]:

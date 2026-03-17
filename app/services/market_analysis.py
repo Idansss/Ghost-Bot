@@ -63,6 +63,8 @@ class MarketAnalysisService:
         self.include_news_default = include_news_default
         self.request_timeout_sec = max(2.0, float(request_timeout_sec))
         self.market_context_service = MarketContextService(price_adapter, ohlcv_adapter)
+        # Limit concurrent OHLCV fetches to prevent unbounded parallelism
+        self._ohlcv_sem = asyncio.Semaphore(5)
         self._narrative_map = {
             "PHB": "AI/privacy infrastructure narrative on BNB-linked flow; usually momentum-driven around AI headlines.",
             "FET": "AI-agent narrative token; often beta to broader AI sector and BTC risk sentiment.",
@@ -99,8 +101,13 @@ class MarketAnalysisService:
     async def _with_timeout(self, coro, timeout: float):
         try:
             return await asyncio.wait_for(coro, timeout=timeout)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return exc
+
+    async def _fetch_ohlcv(self, symbol: str, tf: str, limit: int, timeout: float):
+        """Fetch OHLCV data with semaphore-bounded concurrency."""
+        async with self._ohlcv_sem:
+            return await self._with_timeout(self.ohlcv_adapter.get_ohlcv(symbol, tf, limit), timeout)
 
     async def analyze(
         self,
@@ -174,7 +181,7 @@ class MarketAnalysisService:
             notes.append(f"Core pack active for speed: TF={tf_txt}, EMA={ema_txt}, RSI={rsi_txt}.")
 
         price_task = self._with_timeout(self.price_adapter.get_price(symbol), self.request_timeout_sec)
-        candle_tasks = [self._with_timeout(self.ohlcv_adapter.get_ohlcv(symbol, tf, 260), self.request_timeout_sec + 2) for tf in requested_tfs]
+        candle_tasks = [self._fetch_ohlcv(symbol, tf, 260, self.request_timeout_sec + 2) for tf in requested_tfs]
         deriv_task = (
             self._with_timeout(self.deriv_adapter.get_funding_and_oi(symbol), min(6.0, self.request_timeout_sec))
             if include_derivatives_flag
@@ -309,7 +316,7 @@ class MarketAnalysisService:
         macd_now = self._safe_last(macd_line, 0.0)
         macd_sig_now = self._safe_last(macd_signal, 0.0)
         macd_hist_now = self._safe_last(macd_hist, 0.0)
-        bb_mid_higher = self._safe_last(bollinger_mid(close_higher, 20), current)
+        _ = self._safe_last(bollinger_mid(close_higher, 20), current)
         # VWAP, OBV, Fibonacci, candlestick on primary (and higher for Fib)
         vwap_primary = self._safe_last(vwap(df_primary), current) if "volume" in df_primary.columns and df_primary["volume"].notna().any() else None
         obv_primary = None
@@ -461,7 +468,7 @@ class MarketAnalysisService:
         headlines = []
         try:
             headlines = await self.news_service.get_asset_headlines(symbol_u, limit=2)
-        except Exception:  # noqa: BLE001
+        except Exception:
             headlines = []
 
         narrative = self._narrative_map.get(

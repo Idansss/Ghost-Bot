@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import re
+from collections import OrderedDict
 from contextlib import suppress
-from datetime import datetime, timezone
-import logging
+from datetime import UTC, datetime
 
 from aiogram import F, Router
 from aiogram.enums import ChatAction
@@ -24,13 +25,11 @@ from app.bot.keyboards import (
     alert_created_menu,
     alert_quick_menu,
     alpha_quick_menu,
-    analysis_actions,
     analysis_progressive_menu,
     chart_quick_menu,
     command_center_menu,
     confirm_understanding_kb,
     ema_quick_menu,
-    feedback_buttons,
     feedback_reason_kb,
     findpair_quick_menu,
     giveaway_duration_menu,
@@ -48,6 +47,7 @@ from app.bot.keyboards import (
     wallet_actions,
     watch_quick_menu,
 )
+from app.bot.prefs import effective_timeframe
 from app.bot.templates import (
     asset_unsupported_template,
     clarifying_question,
@@ -55,34 +55,71 @@ from app.bot.templates import (
     cycle_template,
     giveaway_status_template,
     help_text,
-    market_condition_warning,
     news_template,
     pair_find_template,
     price_guess_template,
     rsi_scan_template,
-    setup_review_template,
     settings_text,
+    setup_review_template,
     smalltalk_reply,
     trade_math_template,
     trade_plan_template,
     trade_verification_template,
-    unknown_prompt,
     wallet_scan_template,
     watchlist_template,
 )
+from app.bot.ux import busy as ux_busy
+from app.bot.ux import degraded as ux_degraded
+from app.bot.ux import transient_error as ux_transient_error
 from app.core.config import get_settings
 from app.core.container import ServiceHub
 from app.core.fred_persona import ghost as fred
-from app.services.market_context import format_market_context
-from app.core.nlu import COMMON_WORDS_NOT_TICKERS, Intent, is_likely_english_phrase, parse_message, parse_timestamp
+from app.core.metrics import record_abuse
+from app.core.nlu import (
+    COMMON_WORDS_NOT_TICKERS,
+    Intent,
+    is_likely_english_phrase,
+    parse_message,
+    parse_timestamp,
+)
 from app.db.models import TradeCheck
 from app.db.session import AsyncSessionLocal
+from app.services.market_context import format_market_context
 
 router = Router()
 _settings = get_settings()
 _hub: ServiceHub | None = None
 _ALLOWED_OPENAI_CHAT_MODES = {"hybrid", "tool_first", "llm_first", "chat_only"}
-_CHAT_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+class _LRULockCache:
+    """Bounded LRU cache for per-chat asyncio locks.
+
+    Evicts the least-recently-used *idle* lock when the cache is full,
+    keeping active (locked) entries alive regardless of size.
+    """
+
+    def __init__(self, maxsize: int = 2000) -> None:
+        self._cache: OrderedDict[int, asyncio.Lock] = OrderedDict()
+        self._maxsize = maxsize
+
+    def get(self, chat_id: int) -> asyncio.Lock:
+        if chat_id in self._cache:
+            self._cache.move_to_end(chat_id)
+            return self._cache[chat_id]
+        lock = asyncio.Lock()
+        self._cache[chat_id] = lock
+        self._cache.move_to_end(chat_id)
+        # Evict the oldest idle entry when over capacity
+        if len(self._cache) > self._maxsize:
+            for k, v in list(self._cache.items()):
+                if not v.locked():
+                    del self._cache[k]
+                    break
+        return lock
+
+
+_CHAT_LOCKS = _LRULockCache(maxsize=2000)
 logger = logging.getLogger(__name__)
 SOURCE_QUERY_RE = re.compile(
     r"\b(where\s+is\s+this\s+from|what(?:'s| is)\s+the\s+source|which\s+exchange|source\??|exchange\??)\b",
@@ -163,7 +200,6 @@ FOLLOWUP_RE = re.compile(
 FOLLOWUP_VALUE_RE = re.compile(r"\b[0-9]+(?:\.[0-9]+)?\b")
 
 
-_CHAT_LOCKS_MAX = 2000
 
 
 def _safe_exc(exc: Exception) -> str:
@@ -293,7 +329,7 @@ async def _send_llm_reply(
             hub = _require_hub()
             await hub.cache.set_json(f"llm:last_reply:{chat_id}", reply, ttl=3600)
             await hub.cache.set_json(f"llm:last_user:{chat_id}", user_message, ttl=3600)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
     # If reply starts with "You want:" use confirm buttons so user can confirm or rephrase
     use_confirm = add_quick_replies and cleaned.strip().lower().startswith("you want:")
@@ -341,16 +377,7 @@ async def _send_llm_reply(
 
 
 def _chat_lock(chat_id: int) -> asyncio.Lock:
-    lock = _CHAT_LOCKS.get(chat_id)
-    if lock is None:
-        # Prune idle locks when dict grows too large to prevent unbounded memory growth
-        if len(_CHAT_LOCKS) >= _CHAT_LOCKS_MAX:
-            idle = [k for k, v in list(_CHAT_LOCKS.items()) if not v.locked()]
-            for k in idle[:len(idle) // 2 + 1]:
-                _CHAT_LOCKS.pop(k, None)
-        lock = asyncio.Lock()
-        _CHAT_LOCKS[chat_id] = lock
-    return lock
+    return _CHAT_LOCKS.get(chat_id)
 
 
 async def _acquire_message_once(message: Message, ttl: int = 60 * 60 * 6) -> bool:
@@ -358,7 +385,7 @@ async def _acquire_message_once(message: Message, ttl: int = 60 * 60 * 6) -> boo
     key = f"seen:message:{message.chat.id}:{message.message_id}"
     try:
         return await hub.cache.set_if_absent(key, ttl=ttl)
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("dedupe_cache_error", extra={"event": "dedupe_cache_error", "chat_id": message.chat.id})
         return True
 
@@ -378,7 +405,7 @@ async def _typing_loop(bot, chat_id: int, stop: asyncio.Event) -> None:
             await bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
         try:
             await asyncio.wait_for(stop.wait(), timeout=4.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
 
@@ -387,6 +414,9 @@ async def _run_with_typing_lock(bot, chat_id: int, runner) -> None:
     typing_task = asyncio.create_task(_typing_loop(bot, chat_id, stop))
     lock = _chat_lock(chat_id)
     try:
+        if int(chat_id) > 0 and await _is_blocked_subject(int(chat_id)):
+            record_abuse("blocked_callback")
+            return
         async with lock:
             await runner()
     finally:
@@ -420,14 +450,14 @@ async def _market_aware_gm_reply(hub: ServiceHub, name: str) -> str:
                     f"gm — btc {direction} {abs_pct:.1f}% this hour. {mood} market. send a coin.",
                 ]
                 return random.choice(pool)
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return random.choice(_GM_REPLIES)
 
 
 async def _maybe_send_market_warning(message: Message) -> None:
     """Send a one-liner warning if it's a weekend session (thin liquidity)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if now.weekday() < 5:  # Mon–Fri: no warning
         return
     with suppress(Exception):
@@ -450,7 +480,7 @@ def _parse_int_list(value, fallback: list[int]) -> list[int]:
     for item in items:
         try:
             out.append(int(item))
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
     return out or fallback
 
@@ -681,7 +711,7 @@ async def _llm_analysis_reply(
             max_output_tokens=min(max(int(_settings.openai_max_output_tokens), 400), 700),
             temperature=max(0.6, float(_settings.openai_temperature)),
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     final = reply.strip() if reply and reply.strip() else None
     if final and chat_id is not None:
@@ -715,7 +745,7 @@ async def _llm_followup_reply(
     history = await _get_chat_history(chat_id)
     try:
         reply = await hub.llm_client.reply(prompt, history=history, max_output_tokens=220)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     final = reply.strip() if reply and reply.strip() else None
     if final:
@@ -735,7 +765,7 @@ async def _render_analysis_text(
 ) -> str:
     try:
         return await fred.format_as_ghost(payload)
-    except Exception:  # noqa: BLE001
+    except Exception:
         llm_text = await _llm_analysis_reply(
             payload=payload,
             symbol=symbol,
@@ -821,7 +851,7 @@ async def _is_group_admin(message: Message) -> bool:
     try:
         member = await hub.bot.get_chat_member(message.chat.id, message.from_user.id)
         return getattr(member, "status", "") in {"administrator", "creator"}
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 
@@ -829,14 +859,68 @@ async def _check_req_limit(chat_id: int) -> bool:
     hub = _require_hub()
     try:
         result = await hub.rate_limiter.check(
-            key=f"rl:req:{chat_id}:{datetime.now(timezone.utc).strftime('%Y%m%d%H%M')}",
+            key=f"rl:req:{chat_id}:{datetime.now(UTC).strftime('%Y%m%d%H%M')}",
             limit=_settings.request_rate_limit_per_minute,
             window_seconds=60,
         )
         return result.allowed
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("rate_limit_check_error", extra={"event": "rate_limit_check_error", "chat_id": chat_id})
         return True
+
+
+def _abuse_block_key(subject_id: int) -> str:
+    return f"abuse:block:{subject_id}"
+
+
+def _abuse_strike_key(subject_id: int) -> str:
+    return f"abuse:strikes:{subject_id}"
+
+
+async def _is_blocked_subject(subject_id: int) -> bool:
+    hub = _require_hub()
+    try:
+        raw = await hub.cache.redis.get(_abuse_block_key(subject_id))
+        return bool(raw)
+    except Exception:
+        logger.exception("abuse_block_check_error", extra={"event": "abuse_block_check_error", "subject_id": subject_id})
+        return False
+
+
+async def _record_strike_and_maybe_block(subject_id: int) -> bool:
+    """Returns True if subject is blocked after recording a strike."""
+    hub = _require_hub()
+    if await _is_blocked_subject(subject_id):
+        return True
+    try:
+        strikes = await hub.cache.incr_with_expiry(
+            _abuse_strike_key(subject_id),
+            ttl=int(_settings.abuse_strike_window_sec),
+        )
+        if strikes >= int(_settings.abuse_strikes_to_block):
+            await hub.cache.set_if_absent(_abuse_block_key(subject_id), ttl=int(_settings.abuse_block_ttl_sec))
+            record_abuse("auto_block")
+            logger.warning(
+                "abuse_auto_blocked",
+                extra={
+                    "event": "abuse_auto_blocked",
+                    "subject_id": subject_id,
+                    "strikes": strikes,
+                    "ttl_sec": int(_settings.abuse_block_ttl_sec),
+                },
+            )
+            return True
+    except Exception:
+        logger.exception("abuse_strike_error", extra={"event": "abuse_strike_error", "subject_id": subject_id})
+    return False
+
+
+async def _blocked_notice_ttl(subject_id: int) -> int:
+    hub = _require_hub()
+    try:
+        return await hub.cache.get_ttl(_abuse_block_key(subject_id))
+    except Exception:
+        return -2
 
 
 async def _llm_fallback_reply(user_text: str, settings: dict | None = None, chat_id: int | None = None) -> str | None:
@@ -895,7 +979,7 @@ async def _llm_fallback_reply(user_text: str, settings: dict | None = None, chat
     history = await _get_chat_history(chat_id) if chat_id is not None else []
     try:
         reply = await hub.llm_client.reply(prompt, history=history)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     final = reply.strip() if reply and reply.strip() else None
     if final and chat_id is not None:
@@ -996,7 +1080,7 @@ def _extract_symbol_for_fundamentals(text: str, last_symbols: list) -> str | Non
             base = getattr(syms[0], "base", None) or (syms[0] if isinstance(syms[0], str) else None)
             if base:
                 return str(base).upper()
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     if last_symbols:
         return str(last_symbols[0]).upper().strip() if last_symbols else None
@@ -1009,7 +1093,7 @@ def _format_coin_fundamentals_block(info: dict | None, fear_greed: dict | None) 
     if not info:
         lines.append("(No fundamentals data for this symbol.)")
     else:
-        def _fmt_num(x):  # noqa: B903
+        def _fmt_num(x):
             if x is None:
                 return "—"
             if x >= 1e12:
@@ -1096,7 +1180,7 @@ async def _llm_market_chat_reply(
             news_payload = {}
         if isinstance(news_payload, dict):
             news_headlines = news_payload.get("headlines") or []
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     mkt_text = format_market_context(mkt_ctx) if mkt_ctx else ""
@@ -1126,7 +1210,7 @@ async def _llm_market_chat_reply(
                 price = float(quote["price"])
                 source = str(quote.get("source_line") or quote.get("source") or "exchange")
                 context_block += f"\nRequested symbol {asked_symbol}: ${price:,.2f} (from {source}). You have data for this symbol — use it to answer; do not say you only have BTC/ETH/SOL.\n"
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
     if _wants_fundamentals(cleaned):
@@ -1143,7 +1227,7 @@ async def _llm_market_chat_reply(
                     fear_greed = None
                 fundamentals_block = _format_coin_fundamentals_block(info, fear_greed)
                 context_block += "\n\n" + fundamentals_block + "\n"
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
     ultra = (settings or {}).get("ultra_brief")
@@ -1196,7 +1280,7 @@ async def _llm_market_chat_reply(
             max_output_tokens=min(max(int(_settings.openai_max_output_tokens), 600), 1000),
             temperature=max(0.5, float(_settings.openai_temperature)),
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
 
     final = reply.strip() if reply and reply.strip() else None
@@ -1219,14 +1303,14 @@ def _parse_duration_to_seconds(raw: str) -> int | None:
 def _as_int(value, default: int) -> int:
     try:
         return int(value)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return default
 
 
 def _as_float(value, default: float | None = None) -> float | None:
     try:
         return float(value)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return default
 
 
@@ -1327,7 +1411,7 @@ async def _llm_route_message(user_text: str) -> dict | None:
         return None
     try:
         payload = await hub.llm_client.route_message(user_text)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return None
     if not isinstance(payload, dict):
         return None
@@ -1357,7 +1441,9 @@ async def _dispatch_command_text(message: Message, synthetic_text: str) -> bool:
         if sym and px is not None:
             cond = "above" if raw_cond in ("above", "over") else ("below" if raw_cond in ("below", "under") else "cross")
             try:
-                alert = await hub.alerts_service.create_alert(chat_id, sym, cond, float(px))
+                if not hub.alerts_uc:
+                    raise RuntimeError("alerts use-case not configured")
+                alert = await hub.alerts_uc.create(chat_id=chat_id, symbol=sym, condition=cond, target_price=float(px))
                 _cond_word = {"above": "crosses above", "below": "crosses below"}.get(cond, "crosses")
                 await message.answer(
                     f"🔔 alert set — <b>{alert.symbol}</b> {_cond_word} <b>${float(px):,.2f}</b>.\n"
@@ -1366,7 +1452,7 @@ async def _dispatch_command_text(message: Message, synthetic_text: str) -> bool:
                 )
             except RuntimeError as exc:
                 await message.answer(f"couldn't set that alert — {_safe_exc(exc)}")
-            except Exception:  # noqa: BLE001
+            except Exception:
                 await message.answer("alert creation failed. try again.")
             return True
 
@@ -1404,7 +1490,7 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
     intent = str(route.get("intent", "")).strip().lower()
     try:
         confidence = float(route.get("confidence", 0.0) or 0.0)
-    except Exception:  # noqa: BLE001
+    except Exception:
         confidence = 0.0
     params = route.get("params") if isinstance(route.get("params"), dict) else {}
     chat_id = message.chat.id
@@ -1623,7 +1709,7 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
 
         # Fallback: parse symbol/price directly from the raw text if router missed them
         if not symbol or price is None:
-            from app.core.nlu import _extract_symbols, _extract_prices
+            from app.core.nlu import _extract_prices, _extract_symbols
             if not symbol:
                 syms = _extract_symbols(raw_text)
                 symbol = syms[0] if syms else None
@@ -1646,9 +1732,9 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
         except RuntimeError as exc:
             await message.answer(f"couldn't set that alert — {_safe_exc(exc)}")
             return True
-        except Exception as exc:  # noqa: BLE001
+        except Exception:
             logger.exception("alert_create_failed", extra={"chat_id": chat_id, "symbol": symbol, "price": price})
-            await message.answer(f"alert creation failed. try again in a sec.")
+            await message.answer("alert creation failed. try again in a sec.")
             return True
         await _remember_source_context(
             chat_id,
@@ -1761,6 +1847,22 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
             leverage=leverage,
         )
         await message.answer(setup_review_template(payload, settings))
+
+        # Auto-log this setup to the trade journal (pending outcome)
+        svc = getattr(hub, "trade_journal_service", None)
+        if svc and "journal" in _settings.feature_flags_set():
+            with suppress(Exception):
+                await svc.log_trade(
+                    chat_id=chat_id,
+                    symbol=symbol,
+                    side=direction or "long",
+                    entry=float(entry),
+                    stop=float(stop),
+                    targets=[float(x) for x in targets],
+                    outcome="pending",
+                    notes=f"auto-logged from /setup tf={timeframe}",
+                )
+
         return True
 
     if intent == "trade_math":
@@ -1945,39 +2047,27 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         settings_emas = _parse_int_list(settings.get("preferred_ema_periods", [20, 50, 200]), [20, 50, 200])
         settings_rsis = _parse_int_list(settings.get("preferred_rsi_periods", [14]), [14])
 
-        try:
-            payload = await hub.analysis_service.analyze(
-                symbol,
-                direction=direction,
-                timeframe=parsed.entities.get("timeframe"),
-                timeframes=parsed_tfs or settings_tfs,
-                ema_periods=parsed_emas or settings_emas,
-                rsi_periods=parsed_rsis or settings_rsis,
-                all_timeframes=bool(parsed.entities.get("all_timeframes")),
-                all_emas=bool(parsed.entities.get("all_emas")),
-                all_rsis=bool(parsed.entities.get("all_rsis")),
-                include_derivatives=bool(parsed.entities.get("include_derivatives")),
-                include_news=bool(parsed.entities.get("include_news")),
-                notes=parsed.entities.get("notes", []),
-            )
-            await _append_last_symbol(chat_id, symbol)
-        except Exception as exc:  # noqa: BLE001
-            err = str(exc).lower()
-            if any(
-                marker in err
-                for marker in (
-                    "price unavailable",
-                    "no valid ohlcv",
-                    "isn't supported",
-                    "binance-only",
-                    "unavailable",
-                )
-            ):
-                fallback = await hub.analysis_service.fallback_asset_brief(symbol, reason=str(exc))
-                await message.answer(asset_unsupported_template(fallback, settings))
-                return True
-            raise
-        await hub.cache.set_json(f"last_analysis:{chat_id}:{symbol}", payload, ttl=1800)
+        if not hub.analysis_uc:
+            raise RuntimeError("analysis use-case not configured")
+        result = await hub.analysis_uc.analyze(
+            chat_id=chat_id,
+            symbol=symbol,
+            direction=direction,
+            entities=parsed.entities,
+            settings_timeframes=settings_tfs,
+            settings_emas=settings_emas,
+            settings_rsis=settings_rsis,
+        )
+        if result.kind == "busy":
+            await message.answer(ux_busy("analysis"))
+            return True
+        if result.kind == "unsupported":
+            await message.answer(asset_unsupported_template(result.fallback or {}, settings))
+            return True
+        if result.kind == "error" or not result.payload:
+            raise RuntimeError(result.error or "analysis failed")
+        payload = result.payload
+        await _append_last_symbol(chat_id, symbol)
         await _remember_analysis_context(chat_id, symbol, direction, payload)
         await _remember_source_context(
             chat_id,
@@ -1992,6 +2082,8 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
             settings=settings,
             chat_id=chat_id,
         )
+        if result.kind == "cached":
+            await message.answer(ux_degraded("analysis"))
         await _send_ghost_analysis(message, symbol, analysis_text, direction=direction)
         return True
 
@@ -2047,34 +2139,60 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         return True
 
     if parsed.intent == Intent.RSI_SCAN:
-        try:
-            payload = await hub.rsi_scanner_service.scan(
-                timeframe=parsed.entities.get("timeframe", "1h"),
-                mode=parsed.entities.get("mode", "oversold"),
-                limit=int(parsed.entities.get("limit", 10)),
-                rsi_length=int(parsed.entities.get("rsi_length", 14)),
-                symbol=parsed.entities.get("symbol"),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("rsi_scan_intent_failed", extra={"event": "rsi_intent_error", "error": str(exc)})
-            await message.answer("RSI scan hit an error — try again in a moment.")
+        if not hub.rsi_scan_uc:
+            raise RuntimeError("rsi scan use-case not configured")
+        tf = effective_timeframe(user_text=raw_text, settings=settings, default="1h")
+        mode = str(parsed.entities.get("mode", "oversold"))
+        lim = int(parsed.entities.get("limit", 10))
+        rsi_len = int(parsed.entities.get("rsi_length", 14))
+        sym = parsed.entities.get("symbol")
+        res = await hub.rsi_scan_uc.scan(
+            chat_id=chat_id,
+            timeframe=tf,
+            mode=mode,
+            limit=lim,
+            rsi_length=rsi_len,
+            symbol=str(sym).strip() if sym else None,
+        )
+        if res.busy:
+            await message.answer(ux_busy("rsi"))
             return True
+        if not res.payload:
+            await message.answer(ux_transient_error("rsi"))
+            return True
+        payload = res.payload
         await _remember_source_context(
             chat_id,
             source_line=str(payload.get("source_line") or ""),
             symbol=parsed.entities.get("symbol"),
             context="rsi scan",
         )
+        if res.degraded:
+            await message.answer(ux_degraded("rsi"))
         await message.answer(rsi_scan_template(payload))
         return True
 
     if parsed.intent == Intent.EMA_SCAN:
-        payload = await hub.ema_scanner_service.scan(
-            timeframe=parsed.entities.get("timeframe", "4h"),
-            ema_length=int(parsed.entities.get("ema_length", 200)),
-            mode=parsed.entities.get("mode", "closest"),
-            limit=int(parsed.entities.get("limit", 10)),
+        tf = effective_timeframe(user_text=raw_text, settings=settings, default="4h")
+        ema_len = int(parsed.entities.get("ema_length", 200))
+        mode = str(parsed.entities.get("mode", "closest"))
+        lim = int(parsed.entities.get("limit", 10))
+        if not hub.ema_scan_uc:
+            raise RuntimeError("ema scan use-case not configured")
+        res = await hub.ema_scan_uc.scan(
+            chat_id=chat_id,
+            timeframe=tf,
+            ema_length=ema_len,
+            mode=mode,
+            limit=lim,
         )
+        if res.busy:
+            await message.answer(ux_busy("ema"))
+            return True
+        if not res.payload:
+            await message.answer(ux_transient_error("ema"))
+            return True
+        payload = res.payload
         lines = [payload["summary"], ""]
         for idx, row in enumerate(payload.get("items", []), start=1):
             lines.append(
@@ -2088,16 +2206,22 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
             source_line=str(payload.get("source_line") or ""),
             context="ema scan",
         )
+        if res.degraded:
+            await message.answer(ux_degraded("ema"))
         await message.answer("\n".join(lines))
         return True
 
     if parsed.intent == Intent.CHART:
+        async with hub.cache.distributed_lock(f"user:{chat_id}:chart", ttl=25) as acquired:
+            if not acquired:
+                await message.answer("Chart render already running — try again in a few seconds.")
+                return True
         img, meta = await hub.chart_service.render_chart(
             symbol=parsed.entities["symbol"],
-            timeframe=parsed.entities.get("timeframe", "1h"),
+            timeframe=effective_timeframe(user_text=raw_text, settings=settings, default="1h"),
         )
         symbol = str(parsed.entities["symbol"]).upper()
-        timeframe = str(parsed.entities.get("timeframe", "1h"))
+        timeframe = effective_timeframe(user_text=raw_text, settings=settings, default="1h")
         caption = f"{symbol} {timeframe} chart."
         await _remember_source_context(
             chat_id,
@@ -2116,6 +2240,10 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         return True
 
     if parsed.intent == Intent.HEATMAP:
+        async with hub.cache.distributed_lock(f"user:{chat_id}:heatmap", ttl=25) as acquired:
+            if not acquired:
+                await message.answer("Heatmap render already running — try again in a few seconds.")
+                return True
         symbol = str(parsed.entities.get("symbol", "BTC"))
         img, meta = await hub.orderbook_heatmap_service.render_heatmap(symbol=symbol)
         await _remember_source_context(
@@ -2163,12 +2291,21 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         sym = parsed.entities["symbol"]
         price_val = float(parsed.entities["target_price"])
         cond = parsed.entities.get("condition", "cross")
+        extra_conditions = parsed.entities.get("extra_conditions") or None
         try:
-            alert = await hub.alerts_service.create_alert(chat_id, sym, cond, price_val)
+            if not hub.alerts_uc:
+                raise RuntimeError("alerts use-case not configured")
+            alert = await hub.alerts_uc.create(
+                chat_id=chat_id,
+                symbol=sym,
+                condition=cond,
+                target_price=price_val,
+                extra_conditions=extra_conditions,
+            )
         except RuntimeError as exc:
             await message.answer(f"couldn't set that alert — {_safe_exc(exc)}")
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("alert_create_nlu_failed", extra={"chat_id": chat_id, "symbol": sym})
             await message.answer("alert creation failed. try again in a sec.")
             return True
@@ -2181,15 +2318,28 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
             context="alert",
         )
         _cond_word = {"above": "crosses above", "below": "crosses below"}.get(cond, "crosses")
+        extra_note = ""
+        if extra_conditions:
+            parts = []
+            for ec in extra_conditions:
+                if ec.get("type") == "rsi":
+                    op_label = {"gt": ">", "lt": "<", "gte": ">=", "lte": "<="}.get(ec["operator"], ec["operator"])
+                    parts.append(f"RSI({ec.get('timeframe','1h')}) {op_label} {ec['value']}")
+                elif ec.get("type") == "ema":
+                    parts.append(f"price {ec.get('operator','above')} EMA{ec.get('period',200)}({ec.get('timeframe','1h')})")
+            if parts:
+                extra_note = "\n<i>extra conditions: " + " AND ".join(parts) + "</i>"
         await message.answer(
-            f"🔔 alert set — <b>{alert.symbol}</b> {_cond_word} <b>${price_val:,.2f}</b>.\n"
+            f"🔔 alert set — <b>{alert.symbol}</b> {_cond_word} <b>${price_val:,.2f}</b>.{extra_note}\n"
             "i'll ping you the moment it hits. don't get liquidated.",
             reply_markup=alert_created_menu(alert.symbol),
         )
         return True
 
     if parsed.intent == Intent.ALERT_LIST:
-        alerts = await hub.alerts_service.list_alerts(chat_id)
+        if not hub.alerts_uc:
+            raise RuntimeError("alerts use-case not configured")
+        alerts = await hub.alerts_uc.list(chat_id=chat_id)
         if not alerts:
             await message.answer("No active alerts.")
         else:
@@ -2214,7 +2364,7 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         if count == 0:
             await message.answer("No alerts to clear.")
             return True
-        from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+        from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="Yes, clear all", callback_data=f"confirm:clear_alerts:{count}")],
             [InlineKeyboardButton(text="Cancel", callback_data="confirm:clear_alerts:no")],
@@ -2223,22 +2373,30 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         return True
 
     if parsed.intent == Intent.ALERT_PAUSE:
-        count = await hub.alerts_service.pause_user_alerts(chat_id)
+        if not hub.alerts_uc:
+            raise RuntimeError("alerts use-case not configured")
+        count = await hub.alerts_uc.pause(chat_id=chat_id)
         await message.answer(f"Paused {count} alerts.")
         return True
 
     if parsed.intent == Intent.ALERT_RESUME:
-        count = await hub.alerts_service.resume_user_alerts(chat_id)
+        if not hub.alerts_uc:
+            raise RuntimeError("alerts use-case not configured")
+        count = await hub.alerts_uc.resume(chat_id=chat_id)
         await message.answer(f"Resumed {count} alerts.")
         return True
 
     if parsed.intent == Intent.ALERT_DELETE:
         symbol = parsed.entities.get("symbol")
         if symbol:
-            count = await hub.alerts_service.delete_alerts_by_symbol(chat_id, str(symbol))
+            if not hub.alerts_uc:
+                raise RuntimeError("alerts use-case not configured")
+            count = await hub.alerts_uc.delete_by_symbol(chat_id=chat_id, symbol=str(symbol))
             await message.answer(f"Removed {count} alert(s) for {str(symbol).upper()}.")
             return True
-        ok = await hub.alerts_service.delete_alert(chat_id, int(parsed.entities["alert_id"]))
+        if not hub.alerts_uc:
+            raise RuntimeError("alerts use-case not configured")
+        ok = await hub.alerts_uc.delete(chat_id=chat_id, alert_id=int(parsed.entities["alert_id"]))
         await message.answer("Deleted." if ok else "Alert not found.")
         return True
 
@@ -2312,11 +2470,21 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         return True
 
     if parsed.intent == Intent.NEWS:
-        payload = await hub.news_service.get_digest(
-            topic=parsed.entities.get("topic"),
-            mode=parsed.entities.get("mode", "crypto"),
-            limit=int(parsed.entities.get("limit", 6)),
-        )
+        topic = parsed.entities.get("topic")
+        mode = parsed.entities.get("mode", "crypto")
+        lim = int(parsed.entities.get("limit", 6))
+        if not hub.news_uc:
+            raise RuntimeError("news use-case not configured")
+        res = await hub.news_uc.get_digest(chat_id=chat_id, topic=topic, mode=str(mode), limit=lim)
+        if res is None:
+            await message.answer(ux_busy("news"))
+            return True
+        if not res.payload:
+            await message.answer(ux_transient_error("news"))
+            return True
+        payload = res.payload
+        if res.degraded:
+            await message.answer(ux_degraded("news"))
         heads = payload.get("headlines") if isinstance(payload, dict) else None
         head = heads[0] if isinstance(heads, list) and heads else {}
         await _remember_source_context(
@@ -2328,8 +2496,12 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         return True
 
     if parsed.intent == Intent.SCAN_WALLET:
+        async with hub.cache.distributed_lock(f"user:{chat_id}:wallet_scan", ttl=40) as acquired:
+            if not acquired:
+                await message.answer("Wallet scan already running — try again in a few seconds.")
+                return True
         limiter = await hub.rate_limiter.check(
-            key=f"rl:scan:{chat_id}:{datetime.now(timezone.utc).strftime('%Y%m%d%H')}",
+            key=f"rl:scan:{chat_id}:{datetime.now(UTC).strftime('%Y%m%d%H')}",
             limit=_settings.wallet_scan_limit_per_hour,
             window_seconds=3600,
         )
@@ -2350,6 +2522,10 @@ async def _handle_parsed_intent(message: Message, parsed, settings: dict) -> boo
         return True
 
     if parsed.intent == Intent.TRADECHECK:
+        async with hub.cache.distributed_lock(f"user:{chat_id}:tradecheck", ttl=40) as acquired:
+            if not acquired:
+                await message.answer("Trade check already running — try again in a few seconds.")
+                return True
         ts = parsed.entities["timestamp"]
         if isinstance(ts, str):
             ts = datetime.fromisoformat(ts)
@@ -2409,7 +2585,7 @@ async def start_cmd(message: Message) -> None:
     # Detect new user: created_at within the last 15 seconds
     try:
         is_new = (datetime.utcnow() - user.created_at).total_seconds() < 15
-    except Exception:  # noqa: BLE001
+    except Exception:
         is_new = False
 
     if is_new:
@@ -2455,6 +2631,59 @@ async def admins_cmd(message: Message) -> None:
     lines = ["<b>bot admins</b>\n"]
     lines.extend(f"· <code>{admin_id}</code>" for admin_id in admin_ids)
     await message.answer("\n".join(lines))
+
+
+def _is_bot_admin(message: Message) -> bool:
+    if not message.from_user:
+        return False
+    return int(message.from_user.id) in set(_settings.admin_ids_list())
+
+
+@router.message(Command("block"))
+async def block_cmd(message: Message) -> None:
+    if not _is_bot_admin(message):
+        await message.answer("Unauthorized.")
+        return
+    raw = (message.text or "").strip()
+    parts = raw.split()
+    if len(parts) < 2:
+        await message.answer("Usage: /block <user_id> [minutes]")
+        return
+    try:
+        subject_id = int(parts[1])
+    except ValueError:
+        await message.answer("Invalid user_id.")
+        return
+    ttl_min: int | None = None
+    if len(parts) >= 3:
+        with suppress(Exception):
+            ttl_min = int(parts[2])
+    ttl_sec = int(_settings.abuse_block_ttl_sec if ttl_min is None else max(ttl_min, 1) * 60)
+    hub = _require_hub()
+    await hub.cache.set_if_absent(_abuse_block_key(subject_id), ttl=ttl_sec)
+    record_abuse("admin_block")
+    await message.answer(f"Blocked <code>{subject_id}</code> for ~{max(ttl_sec // 60, 1)} min.")
+
+
+@router.message(Command("unblock"))
+async def unblock_cmd(message: Message) -> None:
+    if not _is_bot_admin(message):
+        await message.answer("Unauthorized.")
+        return
+    raw = (message.text or "").strip()
+    parts = raw.split()
+    if len(parts) < 2:
+        await message.answer("Usage: /unblock <user_id>")
+        return
+    try:
+        subject_id = int(parts[1])
+    except ValueError:
+        await message.answer("Invalid user_id.")
+        return
+    hub = _require_hub()
+    await hub.cache.delete(_abuse_block_key(subject_id), _abuse_strike_key(subject_id))
+    record_abuse("admin_unblock")
+    await message.answer(f"Unblocked <code>{subject_id}</code>.")
 
 
 @router.message(Command("id"))
@@ -2675,7 +2904,7 @@ async def scan_cmd(message: Message) -> None:
         return
 
     limiter = await hub.rate_limiter.check(
-        key=f"rl:scan:{message.chat.id}:{datetime.now(timezone.utc).strftime('%Y%m%d%H')}",
+        key=f"rl:scan:{message.chat.id}:{datetime.now(UTC).strftime('%Y%m%d%H')}",
         limit=_settings.wallet_scan_limit_per_hour,
         window_seconds=3600,
     )
@@ -2788,7 +3017,7 @@ async def alerts_cmd(message: Message) -> None:
     hub = _require_hub()
     try:
         alerts = await hub.alerts_service.list_alerts(message.chat.id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("alerts_list_failed", extra={"event": "alerts_list_failed", "error": str(exc), "chat_id": message.chat.id})
         await message.answer("Alerts are temporarily unavailable. Try again in a few seconds.")
         return
@@ -2818,7 +3047,7 @@ async def alertdel_cmd(message: Message) -> None:
     if not m:
         try:
             alerts = await hub.alerts_service.list_alerts(message.chat.id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.exception("alertdel_list_failed", extra={"event": "alertdel_list_failed", "error": str(exc), "chat_id": message.chat.id})
             await message.answer("Alerts are temporarily unavailable. Try again in a few seconds.")
             return
@@ -2830,7 +3059,7 @@ async def alertdel_cmd(message: Message) -> None:
         return
     try:
         ok = await hub.alerts_service.delete_alert(message.chat.id, int(m.group(1)))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception("alertdel_failed", extra={"event": "alertdel_failed", "error": str(exc), "chat_id": message.chat.id})
         await message.answer("Delete failed on my side. Try again in a few seconds.")
         return
@@ -2863,6 +3092,30 @@ async def position_cmd(message: Message) -> None:
     text = (message.text or "").strip().split(maxsplit=1)[1] if (message.text or "").strip().split() else ""
     args = (text or "").strip().lower().split()
     chat_id = message.chat.id
+
+    if args and args[0] == "summary":
+        summary = await hub.portfolio_service.get_portfolio_summary(chat_id)
+        if not summary["positions"]:
+            await message.answer("No positions. Add one: <code>/position add BTC long 50000 1000 2</code>")
+            return
+        pnl_emoji = "🟢" if summary["total_pnl_usd"] >= 0 else "🔴"
+        lines = [
+            "<b>Portfolio Summary</b>",
+            "",
+            f"Total cost:  <b>${summary['total_cost_usd']:,.2f}</b>",
+            f"Total value: <b>${summary['total_value_usd']:,.2f}</b>",
+            f"Unrealized PnL: {pnl_emoji} <b>${summary['total_pnl_usd']:+,.2f} ({summary['total_pnl_pct']:+.2f}%)</b>",
+            "",
+            "<b>Allocation</b>",
+        ]
+        for p in summary["positions"]:
+            lines.append(f"  {p['symbol']} {p['side']} — {p['allocation_pct']}% | PnL {p['pnl_pct']:+.2f}%")
+        if summary.get("best"):
+            lines.append(f"\n🏆 Best: <b>{summary['best']['symbol']}</b> {summary['best']['pnl_pct']:+.2f}%")
+        if summary.get("worst"):
+            lines.append(f"💀 Worst: <b>{summary['worst']['symbol']}</b> {summary['worst']['pnl_pct']:+.2f}%")
+        await message.answer("\n".join(lines))
+        return
 
     if not args or args[0] == "list":
         positions = await hub.portfolio_service.list_positions(chat_id)
@@ -2926,7 +3179,8 @@ async def position_cmd(message: Message) -> None:
 
     await message.answer(
         "Usage:\n"
-        "• <code>/position list</code> — list positions\n"
+        "• <code>/position summary</code> — total value, allocation, best/worst\n"
+        "• <code>/position list</code> — list positions with P&L\n"
         "• <code>/position add SYMBOL long|short ENTRY SIZE [leverage]</code>\n"
         "• <code>/position delete ID</code>"
     )
@@ -2972,6 +3226,32 @@ async def journal_cmd(message: Message) -> None:
             f"<b>Journal stats</b> (last {days}d)\n"
             f"Trades: {st['trades']} | Wins: {st['wins']} | Win rate: {st['win_rate']}% | Total PnL: ${st['total_pnl']:+,.2f}"
         )
+        return
+
+    # /journal update ID [exit PRICE] [outcome win|loss|be] [pnl AMOUNT]
+    if args[0] == "update" and len(args) >= 3:
+        try:
+            entry_id = int(args[1])
+        except (ValueError, IndexError):
+            await message.answer("Usage: /journal update ID exit PRICE outcome win|loss|be pnl AMOUNT")
+            return
+        raw_args = " ".join(args[2:])
+        exit_price = None
+        outcome = None
+        pnl_quote = None
+        em = re.search(r"\bexit\s+([\d.]+)", raw_args)
+        om = re.search(r"\boutcome\s+(win|loss|be|partial)\b", raw_args)
+        pm = re.search(r"\bpnl\s+([+-]?[\d.]+)", raw_args)
+        if em:
+            exit_price = float(em.group(1))
+        if om:
+            outcome = om.group(1)
+        if pm:
+            pnl_quote = float(pm.group(1))
+        ok = await hub.trade_journal_service.update_trade(
+            chat_id, entry_id=entry_id, exit_price=exit_price, outcome=outcome, pnl_quote=pnl_quote
+        )
+        await message.answer(f"Trade #{entry_id} updated." if ok else f"Trade #{entry_id} not found.")
         return
 
     if args[0] == "log" and len(args) >= 5:
@@ -3025,11 +3305,11 @@ async def compare_cmd(message: Message) -> None:
             *[hub.market_router.get_price(s) for s in symbols],
             return_exceptions=True,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await message.answer(f"Could not fetch prices: {_safe_exc(exc)}")
         return
     lines = ["<b>Compare</b>", ""]
-    for sym, p in zip(symbols, prices):
+    for sym, p in zip(symbols, prices, strict=False):
         if isinstance(p, Exception):
             lines.append(f"<b>{sym}</b> — error")
             continue
@@ -3160,6 +3440,51 @@ async def export_cmd(message: Message) -> None:
     return
 
 
+@router.message(Command("mydata"))
+async def mydata_cmd(message: Message) -> None:
+    hub = _require_hub()
+    svc = getattr(hub, "gdpr_service", None)
+    if not svc:
+        await message.answer("Data export is not available.")
+        return
+    chat_id = message.chat.id
+    data = await svc.export_my_data(chat_id)
+    if data is None:
+        await message.answer("No data found for your account.")
+        return
+    body = json.dumps(data, indent=2, default=str)
+    try:
+        await message.answer_document(
+            BufferedInputFile(body.encode("utf-8"), filename="my_ghost_data.json"),
+            caption="Here's all the data stored about you. To delete it, use /deleteaccount.",
+        )
+    except Exception:
+        await message.answer("Could not send file. Try /export alerts or /export journal for partial exports.")
+
+
+@router.message(Command("deleteaccount"))
+async def deleteaccount_cmd(message: Message) -> None:
+    hub = _require_hub()
+    svc = getattr(hub, "gdpr_service", None)
+    if not svc:
+        await message.answer("Account deletion is not available.")
+        return
+    text = (message.text or "").strip()
+    chat_id = message.chat.id
+    # Require explicit confirmation to prevent accidents
+    if "confirm" not in text.lower():
+        await message.answer(
+            "⚠️ This will permanently delete all your data: alerts, wallets, positions, trade journal, and settings.\n\n"
+            "To confirm, send: <code>/deleteaccount confirm</code>"
+        )
+        return
+    ok = await svc.delete_account(chat_id)
+    if ok:
+        await message.answer("All your data has been deleted. Goodbye.")
+    else:
+        await message.answer("No account found. Nothing to delete.")
+
+
 @router.message(Command("tradecheck"))
 async def tradecheck_cmd(message: Message) -> None:
     await _wizard_set(message.chat.id, {"step": "symbol", "data": {}})
@@ -3220,7 +3545,7 @@ async def join_cmd(message: Message) -> None:
         return
     try:
         payload = await hub.giveaway_service.join_active(message.chat.id, message.from_user.id)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await message.answer(f"couldn't join: {_safe_exc(exc)}")
         return
     await message.answer(f"you're in 🎉 giveaway <b>#{payload['giveaway_id']}</b> — participants: <b>{payload['participants']}</b>")
@@ -3242,7 +3567,7 @@ async def giveaway_cmd(message: Message) -> None:
     if re.search(r"^/giveaway\s+join\b", text, flags=re.IGNORECASE):
         try:
             payload = await hub.giveaway_service.join_active(message.chat.id, message.from_user.id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             await message.answer(f"couldn't join: {_safe_exc(exc)}")
             return
         await message.answer(f"you're in 🎉 giveaway <b>#{payload['giveaway_id']}</b> — participants: <b>{payload['participants']}</b>")
@@ -3251,7 +3576,7 @@ async def giveaway_cmd(message: Message) -> None:
     if re.search(r"^/giveaway\s+end\b", text, flags=re.IGNORECASE):
         try:
             payload = await hub.giveaway_service.end_giveaway(message.chat.id, message.from_user.id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             await message.answer(f"couldn't end giveaway: {_safe_exc(exc)}")
             return
         if payload.get("winner_user_id"):
@@ -3267,7 +3592,7 @@ async def giveaway_cmd(message: Message) -> None:
     if re.search(r"^/giveaway\s+reroll\b", text, flags=re.IGNORECASE):
         try:
             payload = await hub.giveaway_service.reroll(message.chat.id, message.from_user.id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             await message.answer(f"reroll failed: {_safe_exc(exc)}")
             return
         await message.answer(
@@ -3297,7 +3622,7 @@ async def giveaway_cmd(message: Message) -> None:
                 duration_seconds=duration_seconds,
                 prize=prize,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             await message.answer(f"couldn't start giveaway: {_safe_exc(exc)}")
             return
         note = ""
@@ -3343,7 +3668,7 @@ async def followup_callback(callback: CallbackQuery) -> None:
                 _sanitize_llm_html(reply.strip())[:4000],
                 reply_markup=llm_reply_keyboard(),
             )
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     await callback.answer()
 
@@ -3396,7 +3721,7 @@ async def _notify_admins_negative_feedback(
     for admin_id in admin_ids:
         try:
             await hub.telegram_bot.send_message(admin_id, text, parse_mode="HTML")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning(
                 "feedback_dm_failed",
                 extra={
@@ -3426,7 +3751,7 @@ async def feedback_callback(callback: CallbackQuery) -> None:
         try:
             last = await hub.cache.get_json(f"llm:last_reply:{chat_id}")
             return (last or "")[:500] if isinstance(last, str) else str(last or "")[:500]
-        except Exception:  # noqa: BLE001
+        except Exception:
             return ""
 
     if data == "feedback:up":
@@ -3439,7 +3764,7 @@ async def feedback_callback(callback: CallbackQuery) -> None:
     if data == "feedback:suggest":
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         await _set_pending_feedback_suggestion(
             chat_id,
@@ -3457,11 +3782,11 @@ async def feedback_callback(callback: CallbackQuery) -> None:
             if reason == "long":
                 prefs["prefers_shorter"] = True
                 await hub.user_service.update_settings(chat_id, {"feedback_prefs": prefs})
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         await _notify_admins_negative_feedback(
             from_chat_id=chat_id,
@@ -3507,7 +3832,7 @@ async def message_reaction_handler(reaction_update: MessageReactionUpdated) -> N
     try:
         last = await hub.cache.get_json(f"llm:last_reply:{chat_id}")
         reply_preview = (last or "")[:500] if isinstance(last, str) else str(last or "")[:500]
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     await _notify_admins_negative_feedback(
         from_chat_id=chat_id,
@@ -3528,7 +3853,7 @@ async def confirm_understood_callback(callback: CallbackQuery) -> None:
     if data.endswith(":yes"):
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
         await callback.answer("Got it.")
         return
@@ -3538,7 +3863,7 @@ async def confirm_understood_callback(callback: CallbackQuery) -> None:
                 "Rephrase what you want — I'll match it.",
                 reply_markup=None,
             )
-        except Exception:  # noqa: BLE001
+        except Exception:
             await callback.message.answer("Rephrase what you want — I'll match it.")
         await callback.answer()
         return
@@ -3676,7 +4001,7 @@ async def command_menu_callback(callback: CallbackQuery) -> None:
                         symbol=None,
                     )
                     await callback.message.answer(rsi_scan_template(payload))
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.warning("rsi_scan_button_failed", extra={"event": "rsi_button_error", "error": str(exc)})
                     await callback.message.answer("rsi scan hit an error — try again in a moment.")
             await _run_with_typing_lock(callback.bot, chat_id, _run_rsi)
@@ -3715,7 +4040,7 @@ async def command_menu_callback(callback: CallbackQuery) -> None:
                 await callback.message.answer("No alerts to clear.")
                 await callback.answer()
                 return
-            from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Yes, clear all", callback_data=f"confirm:clear_alerts:{count}")],
                 [InlineKeyboardButton(text="Cancel", callback_data="confirm:clear_alerts:no")],
@@ -3830,7 +4155,7 @@ async def giveaway_menu_callback(callback: CallbackQuery) -> None:
         async def _runner() -> None:
             try:
                 payload = await hub.giveaway_service.join_active(chat_id, user_id)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 await callback.message.answer(f"couldn't join: {exc}")
                 return
             gw_id = payload.get("giveaway_id", "?")
@@ -3859,7 +4184,7 @@ async def giveaway_menu_callback(callback: CallbackQuery) -> None:
         async def _runner() -> None:
             try:
                 payload = await hub.giveaway_service.end_giveaway(chat_id, user_id)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 await callback.message.answer(f"couldn't end giveaway: {exc}")
                 return
             if payload.get("winner_user_id"):
@@ -3882,7 +4207,7 @@ async def giveaway_menu_callback(callback: CallbackQuery) -> None:
         async def _runner() -> None:
             try:
                 payload = await hub.giveaway_service.reroll(chat_id, user_id)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 await callback.message.answer(f"reroll failed: {exc}")
                 return
             await callback.message.answer(
@@ -4410,7 +4735,7 @@ async def define_easter_egg_callback(callback: CallbackQuery) -> None:
             timeframe = parts[2] if len(parts) > 2 else "1h"
             try:
                 img, _ = await hub.chart_service.render_chart(symbol="DEFINE", timeframe=timeframe)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 await callback.message.answer("Drop a real ticker for chart, e.g. `chart SOL 1h`.")
                 await callback.answer()
                 return
@@ -4425,7 +4750,7 @@ async def define_easter_egg_callback(callback: CallbackQuery) -> None:
             symbol = "DEFINE"
             try:
                 img, meta = await hub.orderbook_heatmap_service.render_heatmap(symbol=symbol)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 symbol = "BTC"
                 img, meta = await hub.orderbook_heatmap_service.render_heatmap(symbol=symbol)
             await callback.message.answer_photo(
@@ -4490,8 +4815,18 @@ async def route_text(message: Message) -> None:
     text = message.text or ""
     chat_id = message.chat.id
     raw_text = text.strip()
+    subject_id = int(message.from_user.id) if message.from_user else int(chat_id)
 
     if raw_text.startswith("/"):
+        return
+
+    if await _is_blocked_subject(subject_id):
+        ttl = await _blocked_notice_ttl(subject_id)
+        ttl_txt = ""
+        if ttl and ttl > 0:
+            ttl_txt = f" (try again in ~{max(ttl // 60, 1)} min)"
+        record_abuse("blocked_message")
+        await message.answer(f"You're temporarily blocked for spam.{ttl_txt}")
         return
 
     if message.chat.type in ("group", "supergroup"):
@@ -4543,6 +4878,16 @@ async def route_text(message: Message) -> None:
         return
 
     if not await _check_req_limit(chat_id):
+        if await _record_strike_and_maybe_block(subject_id):
+            ttl = await _blocked_notice_ttl(subject_id)
+            ttl_txt = ""
+            if ttl and ttl > 0:
+                ttl_txt = f" (try again in ~{max(ttl // 60, 1)} min)"
+            await message.answer(
+                f"rate limit hit. you're blocked for a bit{ttl_txt}.",
+                reply_to_message_id=message.message_id,
+            )
+            return
         await message.answer(
             "slow down fren — rate limit hit. resets in ~1 min.",
             reply_to_message_id=message.message_id,
@@ -4568,7 +4913,7 @@ async def route_text(message: Message) -> None:
             await message.answer("still on it fren — give me a few seconds.", reply_to_message_id=message.message_id)
         return
 
-    start_ts = datetime.now(timezone.utc)
+    start_ts = datetime.now(UTC)
     stop = asyncio.Event()
     typing_task = asyncio.create_task(_typing_loop(message.bot, chat_id, stop))
     try:
@@ -4614,7 +4959,7 @@ async def route_text(message: Message) -> None:
                             duration_seconds=duration_seconds,
                             prize=prize,
                         )
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         await message.answer(str(exc))
                         return
                     note = ""
@@ -4742,7 +5087,7 @@ async def route_text(message: Message) -> None:
                         if repair_reply and repair_reply.strip():
                             await _send_llm_reply(message, repair_reply.strip(), settings, user_message=text, add_quick_replies=True)
                             return
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
 
             # Special Ghost Easter eggs / overrides
@@ -4798,7 +5143,7 @@ async def route_text(message: Message) -> None:
                     try:
                         if await _handle_routed_intent(message, settings, routed):
                             return
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
                 llm_reply = await _llm_market_chat_reply(text, settings, chat_id=chat_id)
                 if llm_reply:
@@ -4811,7 +5156,7 @@ async def route_text(message: Message) -> None:
                     try:
                         if await _handle_routed_intent(message, settings, routed):
                             return
-                    except Exception:  # noqa: BLE001
+                    except Exception:
                         pass
 
             if parsed.requires_followup:
@@ -4865,14 +5210,14 @@ async def route_text(message: Message) -> None:
                     reply_to_message_id=message.message_id,
                 )
                 return
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.exception("handle_parsed_intent_error", extra={"event": "handle_parsed_intent_error", "chat_id": chat_id})
                 await message.answer(
                     f"couldn't complete that — <i>{_safe_exc(exc)}</i>\n"
                     "try again with a bit more detail."
                 )
                 return
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception(
             "route_text_unhandled_error",
             extra={"event": "route_text_unhandled_error", "chat_id": chat_id},
@@ -4887,5 +5232,5 @@ async def route_text(message: Message) -> None:
         typing_task.cancel()
         with suppress(Exception):
             await typing_task
-        latency_ms = int((datetime.now(timezone.utc) - start_ts).total_seconds() * 1000)
+        latency_ms = int((datetime.now(UTC) - start_ts).total_seconds() * 1000)
         logger.info("message_processed", extra={"event": "message_processed", "chat_id": chat_id, "latency_ms": latency_ms})

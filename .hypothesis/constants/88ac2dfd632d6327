@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\charting.py
+# hypothesis_version: 6.151.9
+
+[0.6, 1.0, 2.5, 102, 120, 133, 140, 158, 160, 170, 181, 185, 200, 201, 209, 214, 220, 230, 240, 247, 255, 260, 620, 680, 840, 900, 1400, '1h', 'PNG', 'RGB', 'Volume', 'close', 'exchange', 'fetched_at', 'high', 'instrument_id', 'low', 'market_kind', 'open', 'source_line', 'symbol', 'timeframe', 'updated_at', 'volume']

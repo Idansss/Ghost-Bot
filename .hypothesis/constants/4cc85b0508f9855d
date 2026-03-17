@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\wallet_scan.py
+# hypothesis_version: 6.151.9
+
+[1e-06, 'Unsupported chain', 'amount', 'native_balance', 'native_symbol', 'native_usd', 'price', 'solana', 'symbol', 'tokens', 'tron', 'warnings']

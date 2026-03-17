@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\aiogram\client\session\aiohttp.py
+# hypothesis_version: 6.151.9
+
+[0.25, 100, 3600, 65536, 'TCPConnector', 'host', 'limit', 'password', 'port', 'proxy_infos', 'proxy_type', 'rdns', 'ssl', 'ttl_dns_cache', 'username']

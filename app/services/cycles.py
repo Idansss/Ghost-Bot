@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pandas as pd
 
@@ -18,7 +18,7 @@ class CyclesService:
         df = pd.DataFrame(candles)
         close = df["close"]
 
-        now = datetime.now(timezone.utc).date()
+        now = datetime.now(UTC).date()
         days_since_halving = (now - self.HALVING_DATE).days
 
         high_1y = float(close.tail(365).max()) if len(close) >= 30 else float(close.max())
@@ -53,5 +53,5 @@ class CyclesService:
                 invalidation,
             ],
             "confidence": confidence,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }

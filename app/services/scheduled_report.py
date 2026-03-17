@@ -1,7 +1,7 @@
 """Scheduled reports: subscribe to daily market summary at a given UTC time."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 
@@ -102,7 +102,7 @@ class ScheduledReportService:
 
     async def get_due_reports(self, now: datetime | None = None) -> list[tuple[int, str]]:
         """Return list of (chat_id, report_type) for subscriptions due at the given UTC time (default now)."""
-        now = now or datetime.now(timezone.utc)
+        now = now or datetime.now(UTC)
         h, m = now.hour, now.minute
         async with self.db_factory() as session:
             r = await session.execute(

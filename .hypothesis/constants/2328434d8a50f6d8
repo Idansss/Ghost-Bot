@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\openai\lib\streaming\_assistants.py
+# hypothesis_version: 6.151.9
+
+['No messages found', 'No run steps found', 'dict[object, object]', 'error', 'image_file', 'index', 'not handled yet', 'text', 'thread.created', 'thread.message.delta', 'thread.run.cancelled', 'thread.run.completed', 'thread.run.created', 'thread.run.expired', 'thread.run.failed', 'thread.run.queued', 'tool_calls', 'type']

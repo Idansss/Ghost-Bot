@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\aiohttp\http_writer.py
+# hypothesis_version: 6.151.9
+
+[b'\r\n', b'\r\n0\r\n\r\n', b'0\r\n\r\n', 65536, '%x\r\n', ': ', 'CIMultiDict[str]', 'HttpVersion', 'HttpVersion10', 'HttpVersion11', 'StreamWriter', 'ascii', 'c', 'deflate', 'utf-8']

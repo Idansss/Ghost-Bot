@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\scheduled_report.py
+# hypothesis_version: 6.151.9
+
+['UTC', 'chat_id', 'cron_hour_utc', 'cron_minute_utc', 'enabled', 'id', 'market_summary', 'report_type', 'timezone']

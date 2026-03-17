@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from io import BytesIO
 
-from PIL import Image, ImageDraw
 import pandas as pd
+from PIL import Image, ImageDraw
 
 from app.adapters.ohlcv import OHLCVAdapter
 from app.core.ta import ema
@@ -79,14 +79,14 @@ class ChartService:
         for idx, row in enumerate(df.itertuples(index=False)):
             o = float(row.open)
             h = float(row.high)
-            l = float(row.low)
+            low = float(row.low)
             c = float(row.close)
             v = float(row.volume)
             x = int(x_start + idx * step)
             color = up if c >= o else down
 
             y_h = self._scale(h, vmin, vmax, price_top, price_bottom)
-            y_l = self._scale(l, vmin, vmax, price_top, price_bottom)
+            y_l = self._scale(low, vmin, vmax, price_top, price_bottom)
             y_o = self._scale(o, vmin, vmax, price_top, price_bottom)
             y_c = self._scale(c, vmin, vmax, price_top, price_bottom)
 

@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\portfolio.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1.0, 100000.0, 100, 255, 'User not found.', 'allocation_pct', 'best', 'created_at', 'current_price', 'entry_price', 'id', 'leverage', 'long', 'notes', 'pnl_pct', 'pnl_quote', 'positions', 'price', 'short', 'side', 'size_quote', 'symbol', 'total_cost_usd', 'total_pnl_pct', 'total_pnl_usd', 'total_value_usd', 'worst']

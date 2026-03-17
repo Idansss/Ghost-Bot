@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any, Tuple
-
 import numpy as np
 import pandas as pd
 
@@ -32,7 +30,7 @@ def bollinger_mid(series: pd.Series, period: int = 20) -> pd.Series:
 
 def bollinger_bands(
     series: pd.Series, period: int = 20, num_std: float = 2.0
-) -> Tuple[pd.Series, pd.Series, pd.Series]:
+) -> tuple[pd.Series, pd.Series, pd.Series]:
     """Upper, middle, lower Bollinger Bands."""
     mid = series.rolling(window=period).mean()
     std = series.rolling(window=period).std()
@@ -41,7 +39,7 @@ def bollinger_bands(
     return upper, mid, lower
 
 
-def macd(series: pd.Series) -> Tuple[pd.Series, pd.Series, pd.Series]:
+def macd(series: pd.Series) -> tuple[pd.Series, pd.Series, pd.Series]:
     """MACD line, signal line, histogram."""
     fast = ema(series, 12)
     slow = ema(series, 26)
@@ -78,7 +76,7 @@ def vwap(df: pd.DataFrame) -> pd.Series:
     return (typical * vol).cumsum() / vol.cumsum().replace(0, np.nan)
 
 
-def stochastic(df: pd.DataFrame, k_period: int = 14, d_period: int = 3) -> Tuple[pd.Series, pd.Series]:
+def stochastic(df: pd.DataFrame, k_period: int = 14, d_period: int = 3) -> tuple[pd.Series, pd.Series]:
     """Stochastic %K and %D."""
     low_n = df["low"].rolling(window=k_period).min()
     high_n = df["high"].rolling(window=k_period).max()
@@ -99,12 +97,10 @@ def adx(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """Average Directional Index (trend strength)."""
     high = df["high"]
     low = df["low"]
-    close = df["close"]
     plus_dm = high.diff()
     minus_dm = -low.diff()
     plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
     minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
-    tr = atr(df, period=1)
     atr_ser = atr(df, period)
     plus_di = 100.0 * (plus_dm.rolling(period).mean() / atr_ser.replace(0, np.nan))
     minus_di = 100.0 * (minus_dm.rolling(period).mean() / atr_ser.replace(0, np.nan))
@@ -126,7 +122,7 @@ def fibonacci_retracements(swing_high: float, swing_low: float) -> dict[str, flo
     }
 
 
-def ichimoku(df: pd.DataFrame) -> Tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
+def ichimoku(df: pd.DataFrame) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.Series]:
     """
     Ichimoku Cloud: Tenkan (9), Kijun (26), Senkou A, Senkou B (52), Chikou Span.
     Returns (tenkan, kijun, senkou_a, senkou_b, chikou).

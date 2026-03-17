@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import orjson
@@ -15,9 +17,9 @@ class RedisCache:
 
     async def close(self) -> None:
         if hasattr(self.redis, "aclose"):
-            await self.redis.aclose()  # type: ignore[attr-defined]
+            await self.redis.aclose()
             return
-        await self.redis.close()  # type: ignore[func-returns-value]
+        await self.redis.close()
 
     async def get_json(self, key: str) -> Any | None:
         try:
@@ -28,14 +30,14 @@ class RedisCache:
         except orjson.JSONDecodeError:
             logger.warning("cache_json_decode_error", extra={"key": key})
             return None
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("cache_get_error", extra={"key": key, "error": str(exc)})
             return None
 
     async def set_json(self, key: str, value: Any, ttl: int) -> None:
         try:
             await self.redis.set(key, orjson.dumps(value), ex=ttl)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("cache_set_error", extra={"key": key, "error": str(exc)})
 
     async def incr_with_expiry(self, key: str, ttl: int) -> int:
@@ -45,14 +47,14 @@ class RedisCache:
             pipe.expire(key, ttl)
             count, _ = await pipe.execute()
             return int(count)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("cache_incr_error", extra={"key": key, "error": str(exc)})
             return 0
 
     async def set_if_absent(self, key: str, ttl: int, value: str = "1") -> bool:
         try:
             return bool(await self.redis.set(key, value.encode("utf-8"), nx=True, ex=ttl))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("cache_set_if_absent_error", extra={"key": key, "error": str(exc)})
             return False
 
@@ -62,7 +64,7 @@ class RedisCache:
             return 0
         try:
             return int(await self.redis.delete(*keys))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("cache_delete_error", extra={"keys": keys, "error": str(exc)})
             return 0
 
@@ -70,6 +72,28 @@ class RedisCache:
         """Returns remaining TTL in seconds. -1 = no expiry, -2 = key missing."""
         try:
             return int(await self.redis.ttl(key))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("cache_ttl_error", extra={"key": key, "error": str(exc)})
             return -2
+
+    @contextlib.asynccontextmanager
+    async def distributed_lock(self, name: str, ttl: int = 60) -> AsyncIterator[bool]:
+        """Distributed lock using Redis SET NX EX.
+
+        Yields True if this instance acquired the lock, False if another instance
+        already holds it. The caller should skip work when yielded False.
+
+        Usage::
+
+            async with cache.distributed_lock("task:alerts", ttl=45) as acquired:
+                if not acquired:
+                    return
+                # ... do work ...
+        """
+        lock_key = f"ghost:lock:{name}"
+        acquired = await self.set_if_absent(lock_key, ttl=ttl)
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                await self.delete(lock_key)

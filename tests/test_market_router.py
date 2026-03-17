@@ -16,10 +16,10 @@ class _DummyCache:
     async def get_json(self, key: str):
         return self.store.get(key)
 
-    async def set_json(self, key: str, value, ttl: int = 0) -> None:  # noqa: ARG002
+    async def set_json(self, key: str, value, ttl: int = 0) -> None:
         self.store[key] = value
 
-    async def incr_with_expiry(self, key: str, ttl: int = 0) -> int:  # noqa: ARG002
+    async def incr_with_expiry(self, key: str, ttl: int = 0) -> int:
         current = int(self.store.get(key, 0) or 0) + 1
         self.store[key] = current
         return current

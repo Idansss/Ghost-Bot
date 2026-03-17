@@ -6,30 +6,38 @@ from aiogram import Bot
 
 from app.adapters.llm import LLMClient
 from app.adapters.market_router import MarketDataRouter
+from app.application.usecases import (
+    AlertsUseCase,
+    AnalysisUseCase,
+    EMAScanUseCase,
+    NewsUseCase,
+    RSIScanUseCase,
+)
 from app.core.cache import RedisCache
 from app.core.rate_limit import RateLimiter
 from app.services.alerts import AlertsService
 from app.services.audit import AuditService
 from app.services.broadcast_service import BroadcastService
+from app.services.charting import ChartService
+from app.services.coin_info import CoinInfoService
 from app.services.correlation import CorrelationService
 from app.services.cycles import CyclesService
 from app.services.discovery import DiscoveryService
 from app.services.ema_scanner import EMAScannerService
+from app.services.gdpr import GDPRService
 from app.services.giveaway import GiveawayService
 from app.services.market_analysis import MarketAnalysisService
 from app.services.news import NewsService
 from app.services.orderbook_heatmap import OrderbookHeatmapService
+from app.services.portfolio import PortfolioService
 from app.services.rsi_scanner import RSIScannerService
+from app.services.scheduled_report import ScheduledReportService
 from app.services.setup_review import SetupReviewService
-from app.services.charting import ChartService
-from app.services.coin_info import CoinInfoService
+from app.services.trade_journal import TradeJournalService
 from app.services.trade_verify import TradeVerifyService
 from app.services.users import UserService
 from app.services.wallet_scan import WalletScanService
 from app.services.watchlist import WatchlistService
-from app.services.portfolio import PortfolioService
-from app.services.trade_journal import TradeJournalService
-from app.services.scheduled_report import ScheduledReportService
 
 
 @dataclass
@@ -62,3 +70,11 @@ class ServiceHub:
     portfolio_service: PortfolioService | None = None
     trade_journal_service: TradeJournalService | None = None
     scheduled_report_service: ScheduledReportService | None = None
+    gdpr_service: GDPRService | None = None
+
+    # Application/use-case layer (thin orchestration)
+    analysis_uc: AnalysisUseCase | None = None
+    news_uc: NewsUseCase | None = None
+    rsi_scan_uc: RSIScanUseCase | None = None
+    ema_scan_uc: EMAScanUseCase | None = None
+    alerts_uc: AlertsUseCase | None = None

@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\exchanges\mexc.py
+# hypothesis_version: 6.151.9
+
+[200, 300, 1000, 2700, '/', '12h', '15m', '1d', '1h', '1m', '1w', '2h', '30m', '3d', '3m', '4h', '5m', '6h', 'ENABLED', 'MEXC', 'USDT', 'asks', 'baseAsset', 'bids', 'change', 'close', 'ex:mexc:spot:markets', 'high', 'instrument_id', 'interval', 'lastPrice', 'limit', 'low', 'mexc', 'mexc_spot', 'open', 'price', 'priceChangePercent', 'quoteAsset', 'quoteVolume', 'quote_volume', 'source', 'spot', 'status', 'symbol', 'symbols', 'ts', 'volume']

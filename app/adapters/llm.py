@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
-from litellm import acompletion
+from app.core.metrics import LLM_REQUESTS_TOTAL, LLMTimer
+
+try:
+    from litellm import acompletion as _litellm_acompletion
+except Exception:
+    _litellm_acompletion = None
+
+try:
+    from openai import AsyncOpenAI
+except Exception:
+    AsyncOpenAI = None  # type: ignore[misc,assignment]
 from pydantic import BaseModel, Field, ValidationError
 
 logger = logging.getLogger(__name__)
@@ -38,8 +49,8 @@ PRIVACY — NEVER REVEAL HOW YOU WERE BUILT:
 - Deflect in character: one short line only, e.g. "that's classified, anon" or "i just read the charts, fren" or "no doxxing myself." Then stop. Do not elaborate or give a single detail.
 
 ANSWER LENGTH:
-- Match your answer to the question. Short question (e.g. "what's the price?", "gm") → short answer. Open-ended ("what do you think about the market?") → fuller answer.
-- Keep paragraphs to 3–4 sentences max. Use line breaks so it's easy to read.
+- Match your answer to the question. Short question (e.g. "what's the price?", "gm") -> short answer. Open-ended ("what do you think about the market?") -> fuller answer.
+- Keep paragraphs to 3-4 sentences max. Use line breaks so it's easy to read.
 
 WHEN ASKED "which coin / what to watch / what to buy / market outlook":
 - Give 3-5 specific coins RIGHT NOW with current price context if available.
@@ -260,18 +271,59 @@ class LLMClient:
         api_key: str | None = None,
         base_url: str | None = None,
     ) -> str:
-        kwargs: dict[str, Any] = {
-            "model": model or self.model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "api_key": api_key or self.api_key,
-            "timeout": 10,  # fail fast — Vercel has a 30s function limit
-        }
-        if base_url:
-            kwargs["base_url"] = base_url
-        resp = await acompletion(**kwargs)
-        return (resp.choices[0].message.content or "").strip()
+        chosen_model = model or self.model
+        chosen_key = api_key or self.api_key
+        endpoint = "chat"
+        # Allow callers to mark a request as routing, to segment metrics.
+        if messages and isinstance(messages[0], dict) and str(messages[0].get("content", "")).startswith(ROUTER_SYSTEM[:20]):
+            endpoint = "router"
+        provider = str(chosen_model).split("/", 1)[0] if "/" in str(chosen_model) else "openai"
+
+        # Preferred path: LiteLLM (supports anthropic/xai/openai uniformly)
+        if _litellm_acompletion is not None:
+            with LLMTimer(provider=provider, model=str(chosen_model), endpoint=endpoint):
+                try:
+                    kwargs: dict[str, Any] = {
+                        "model": chosen_model,
+                        "messages": messages,
+                        "max_tokens": max_tokens,
+                        "temperature": temperature,
+                        "api_key": chosen_key,
+                        "timeout": 10,  # fail fast — Vercel has a 30s function limit
+                    }
+                    if base_url:
+                        kwargs["base_url"] = base_url
+                    resp = await _litellm_acompletion(**kwargs)
+                    LLM_REQUESTS_TOTAL.labels(provider=provider, model=str(chosen_model), endpoint=endpoint, outcome="ok").inc()
+                    return (resp.choices[0].message.content or "").strip()
+                except Exception:
+                    LLM_REQUESTS_TOTAL.labels(provider=provider, model=str(chosen_model), endpoint=endpoint, outcome="error").inc()
+                    raise
+
+        # Fallback path: OpenAI SDK only (OpenAI models only). This keeps Windows dev workable
+        # even when LiteLLM is unavailable due to long-path packaging issues.
+        if not str(chosen_model).startswith(("gpt-", "o3", "o4")):
+            raise RuntimeError("LiteLLM is required for non-OpenAI providers/models.")
+        if AsyncOpenAI is None:
+            raise RuntimeError("OpenAI SDK not installed.")
+
+        provider = "openai"
+        with LLMTimer(provider=provider, model=str(chosen_model), endpoint=endpoint):
+            try:
+                client = AsyncOpenAI(api_key=chosen_key)
+                resp = await client.chat.completions.create(
+                    model=chosen_model,
+                    messages=messages,  # type: ignore[arg-type]
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    timeout=10,
+                )
+                LLM_REQUESTS_TOTAL.labels(provider=provider, model=str(chosen_model), endpoint=endpoint, outcome="ok").inc()
+                content = resp.choices[0].message.content or ""
+                return str(content).strip()
+            except Exception:
+                LLM_REQUESTS_TOTAL.labels(provider=provider, model=str(chosen_model), endpoint=endpoint, outcome="error").inc()
+                raise
 
     async def reply(
         self,
@@ -298,7 +350,7 @@ class LLMClient:
         # Try primary (Claude)
         try:
             return await self._call(messages, max_tok, temp)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("llm_primary_failed", extra={"model": self.model, "error": str(exc)})
 
         # Fallback (Grok)
@@ -310,10 +362,10 @@ class LLMClient:
                     api_key=self.fallback_api_key,
                     base_url=self.fallback_base_url,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.warning("llm_fallback_failed", extra={"model": self.fallback_model, "error": str(exc)})
 
-        return "Couldn't reach the brain right now — try again in a sec, fren."
+        return "Couldn't reach the brain right now - try again in a sec, fren."
 
     async def route_message(self, user_text: str) -> dict:
         messages = [
@@ -324,22 +376,18 @@ class LLMClient:
 
         # Try primary (Claude)
         raw = ""
-        try:
+        with contextlib.suppress(Exception):
             raw = await self._call(messages, 260, 0.0, model=router_mod)
-        except Exception:  # noqa: BLE001
-            pass
 
         # Fallback (Grok)
         if not raw and self.fallback_model:
-            try:
+            with contextlib.suppress(Exception):
                 raw = await self._call(
                     messages, 260, 0.0,
                     model=self.fallback_model,
                     api_key=self.fallback_api_key,
                     base_url=self.fallback_base_url,
                 )
-            except Exception:  # noqa: BLE001
-                pass
 
         if not raw:
             return {"intent": "general_chat", "confidence": 0.0, "params": {}}

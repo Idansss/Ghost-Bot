@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\core\logging.py
+# hypothesis_version: 6.151.9
+
+['INFO', 'alert_id', 'args', 'chat_id', 'created', 'error', 'event', 'exc', 'exc_info', 'exc_text', 'filename', 'funcName', 'latency_ms', 'level', 'levelname', 'levelno', 'lineno', 'logger', 'message', 'module', 'msecs', 'msg', 'name', 'pathname', 'process', 'processName', 'relativeCreated', 'request_id', 'stack_info', 'symbol', 'thread', 'threadName', 'ts', 'user_id']

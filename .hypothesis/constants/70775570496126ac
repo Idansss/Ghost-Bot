@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\exchanges\bybit.py
+# hypothesis_version: 6.151.9
+
+[100.0, 200, 300, 1000, 2700, '/', '1', '120', '12h', '15', '15m', '1d', '1h', '1m', '1w', '240', '2h', '3', '30', '30m', '360', '3m', '4h', '5', '5m', '5min', '60', '6h', '720', 'Bybit', 'CLOSED', 'D', 'OFFLINE', 'PENDING', 'SUSPENDED', 'USDT', 'W', 'a', 'asks', 'b', 'bids', 'bybit', 'category', 'change', 'close', 'cursor', 'fundingRate', 'funding_rate', 'high', 'instrument_id', 'interval', 'intervalTime', 'lastPrice', 'limit', 'linear', 'list', 'low', 'nextPageCursor', 'open', 'openInterest', 'open_interest', 'price', 'price24hPcnt', 'quote_volume', 'result', 'source', 'spot', 'status', 'symbol', 'ts', 'turnover24h', 'volume']

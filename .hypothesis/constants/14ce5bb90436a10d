@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\trade_journal.py
+# hypothesis_version: 6.151.9
+
+[100, 'created_at', 'entry', 'exit_price', 'id', 'long', 'n', 'notes', 'outcome', 'pnl_quote', 'side', 'stop', 'symbol', 'targets', 'total', 'total_pnl', 'trades', 'win_rate', 'wins']

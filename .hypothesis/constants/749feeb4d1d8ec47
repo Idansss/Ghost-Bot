@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\aiogram\enums\message_entity_type.py
+# hypothesis_version: 6.151.9
+
+['blockquote', 'bold', 'bot_command', 'cashtag', 'code', 'custom_emoji', 'email', 'hashtag', 'italic', 'mention', 'phone_number', 'pre', 'spoiler', 'strikethrough', 'text_link', 'text_mention', 'underline', 'url']

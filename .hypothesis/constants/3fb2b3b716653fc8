@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\apscheduler\job.py
+# hypothesis_version: 6.151.9
+
+['%s (trigger: %s, %s)', ', ', '__weakref__', '_jobstore_alias', '_scheduler', 'args', 'coalesce', 'executor', 'func', 'func_ref', 'id', 'kwargs', 'max_instances', 'misfire_grace_time', 'name', 'next run at: ', 'next_run_time', 'paused', 'pending', 'trigger', 'version']

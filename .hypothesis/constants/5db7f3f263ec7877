@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\core\cache.py
+# hypothesis_version: 6.151.9
+
+['1', 'aclose', 'cache_delete_error', 'cache_get_error', 'cache_incr_error', 'cache_set_error', 'cache_ttl_error', 'error', 'key', 'keys', 'utf-8']

@@ -1,7 +1,7 @@
 """Trade journal: log trades and list with optional stats."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 
@@ -81,11 +81,44 @@ class TradeJournalService:
             for e in rows
         ]
 
+    async def update_trade(
+        self,
+        chat_id: int,
+        entry_id: int,
+        exit_price: float | None = None,
+        outcome: str | None = None,
+        pnl_quote: float | None = None,
+        notes: str | None = None,
+    ) -> bool:
+        user_id = await self._user_id(chat_id)
+        if user_id is None:
+            return False
+        async with self.db_factory() as session:
+            r = await session.execute(
+                select(TradeJournalEntry).where(
+                    TradeJournalEntry.id == entry_id,
+                    TradeJournalEntry.user_id == user_id,
+                )
+            )
+            row = r.scalar_one_or_none()
+            if row is None:
+                return False
+            if exit_price is not None:
+                row.exit_price = float(exit_price)
+            if outcome is not None:
+                row.outcome = outcome[:20]
+            if pnl_quote is not None:
+                row.pnl_quote = float(pnl_quote)
+            if notes is not None:
+                row.notes = notes
+            await session.commit()
+        return True
+
     async def get_stats(self, chat_id: int, days: int = 30) -> dict:
         user_id = await self._user_id(chat_id)
         if user_id is None:
             return {"trades": 0, "wins": 0, "win_rate": 0, "total_pnl": 0}
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        cutoff = datetime.now(UTC) - timedelta(days=days)
         async with self.db_factory() as session:
             r = await session.execute(
                 select(

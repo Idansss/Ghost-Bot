@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
-from typing import Iterable
+from collections.abc import Iterable
+from datetime import UTC, datetime
 
 from app.adapters.llm import LLMClient
 from app.adapters.news_sources import NewsSourcesAdapter
@@ -24,7 +24,7 @@ class NewsService:
             "title": story.get("title", "Untitled"),
             "url": story.get("url", ""),
             "source": story.get("source", "unknown"),
-            "published_at": story.get("published_at", datetime.now(timezone.utc).isoformat()),
+            "published_at": story.get("published_at", datetime.now(UTC).isoformat()),
             "summary": story.get("summary", ""),
         }
 
@@ -73,7 +73,7 @@ class NewsService:
         )
         try:
             text = await self.llm_client.reply(prompt)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
         cleaned = (text or "").strip()
         return cleaned if cleaned else None
@@ -121,7 +121,7 @@ class NewsService:
                 "summary": f"No fresh {topic_name} headlines from configured feeds right now.",
                 "headlines": [],
                 "vibe": "Enable RSS/API feeds in .env for live news sources.",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(UTC).isoformat(),
             }
 
         summary = await self._summarize_with_llm(selected, normalized_topic or "crypto", mode)
@@ -145,7 +145,7 @@ class NewsService:
             "summary": summary,
             "headlines": bullets,
             "vibe": self._vibe_line(normalized_topic, mode),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
 
     async def get_asset_headlines(self, symbol: str, limit: int = 3) -> list[dict]:

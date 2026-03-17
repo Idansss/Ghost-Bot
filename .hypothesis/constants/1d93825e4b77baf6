@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\db\session.py
+# hypothesis_version: 6.151.9
+
+['allow', 'channel_binding', 'disable', 'pool_pre_ping', 'poolclass', 'postgres://', 'postgresql://', 'require', 'ssl', 'sslmode']

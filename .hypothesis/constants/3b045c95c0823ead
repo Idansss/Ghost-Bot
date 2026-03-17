@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\prometheus_client\registry.py
+# hypothesis_version: 6.151.9
+
+['RestrictedRegistry', 'Target metadata', '_bucket', '_count', '_created', '_gcount', '_gsum', '_info', '_sum', '_total', 'counter', 'gaugehistogram', 'histogram', 'info', 'summary', 'target', 'target_info']

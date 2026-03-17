@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\llm.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.7, 1.0, 260, 700, '```', 'alert_clear', 'alert_create', 'alert_delete', 'alert_list', 'api_key', 'assistant', 'base_url', 'chart', 'confidence', 'content', 'ema_scan', 'error', 'followup_question', 'general_chat', 'giveaway_cancel', 'giveaway_end', 'giveaway_join', 'giveaway_reroll', 'giveaway_start', 'giveaway_status', 'gpt-', 'heatmap', 'intent', 'llm_fallback_failed', 'llm_primary_failed', 'market_analysis', 'market_chat', 'max_tokens', 'messages', 'model', 'news_digest', 'o3', 'o4', 'pair_find', 'params', 'price_guess', 'role', 'rsi_scan', 'setup_review', 'smalltalk', 'system', 'temperature', 'timeout', 'trade_math', 'user', 'watch_asset', 'watchlist', '{', '}']

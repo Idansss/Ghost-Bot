@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\aiogram\enums\update_type.py
+# hypothesis_version: 6.151.9
+
+['business_connection', 'business_message', 'callback_query', 'channel_post', 'chat_boost', 'chat_join_request', 'chat_member', 'chosen_inline_result', 'edited_channel_post', 'edited_message', 'inline_query', 'message', 'message_reaction', 'my_chat_member', 'poll', 'poll_answer', 'pre_checkout_query', 'purchased_paid_media', 'removed_chat_boost', 'shipping_query']

@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\giveaway.py
+# hypothesis_version: 6.151.9
+
+['Prize', 'active', 'already_finalized', 'chat_id', 'completed', 'end_time', 'ended_no_winner', 'giveaway_id', 'id', 'message', 'note', 'ok', 'participants', 'prize', 'rerolled', 'seconds_left', 'status', 'winner_user_id']

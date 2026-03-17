@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\trade_verify.py
+# hypothesis_version: 6.151.9
+
+[-1.0, 0.0, 500, 1000, 3600, '1h', 'No candles available', 'ambiguous', 'conservative', 'direction', 'evaluated_until', 'filled_at', 'first_hit', 'high', 'long', 'loss', 'low', 'mae', 'mfe', 'mode', 'not_filled', 'note', 'open', 'optimistic', 'r_multiple', 'result', 'short', 'source_line', 'symbol', 'ts', 'win']

@@ -57,7 +57,7 @@ class CoinInfoService:
             for item in search.get("coins", []):
                 if (item.get("symbol") or "").upper() == base:
                     return item.get("id")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("coin_info_search_failed", extra={"symbol": base, "error": str(exc)})
         return None
 
@@ -78,7 +78,7 @@ class CoinInfoService:
             out = {"value": value, "classification": classification or None}
             await self.cache.set_json(cache_key, out, ttl=FEAR_GREED_CACHE_TTL)
             return out
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("fear_greed_fetch_failed", extra={"error": str(exc)})
             return {"value": None, "classification": None}
 
@@ -104,7 +104,7 @@ class CoinInfoService:
                 f"{self.coingecko_base}/coins/{cg_id}",
                 params={"localization": "false", "tickers": "false", "community_data": "false", "developer_data": "false"},
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logger.warning("coin_info_fetch_failed", extra={"symbol": base, "cg_id": cg_id, "error": str(exc)})
             return None
 

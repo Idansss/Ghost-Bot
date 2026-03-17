@@ -5,7 +5,7 @@ import math
 import pandas as pd
 
 from app.adapters.ohlcv import OHLCVAdapter
-from app.core.ta import atr, bollinger_mid, ema, pivot_levels
+from app.core.ta import atr, ema, pivot_levels
 
 
 def _fmt(v: float) -> str:

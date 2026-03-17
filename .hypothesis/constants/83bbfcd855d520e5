@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\aiogram\enums\bot_command_scope_type.py
+# hypothesis_version: 6.151.9
+
+['all_group_chats', 'all_private_chats', 'chat', 'chat_administrators', 'chat_member', 'default']

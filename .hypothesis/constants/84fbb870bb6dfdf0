@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\exchanges\okx.py
+# hypothesis_version: 6.151.9
+
+[0.0, 100.0, 200, 300, 400, 1000, 2700, '-USDT', '/', '12H', '12h', '15m', '1D', '1H', '1W', '1d', '1h', '1m', '1w', '2H', '2h', '30m', '3D', '3d', '3m', '4H', '4h', '5m', '6H', '6h', 'OKX', 'SPOT', 'SWAP', 'USDT', 'asks', 'bar', 'baseCcy', 'bids', 'change', 'close', 'data', 'ex:okx:perp:markets', 'ex:okx:spot:markets', 'fundingRate', 'funding_rate', 'high', 'instId', 'instType', 'instrument_id', 'last', 'limit', 'live', 'low', 'oi', 'okx', 'open', 'open24h', 'open_interest', 'price', 'quoteCcy', 'quote_volume', 'settleCcy', 'source', 'spot', 'state', 'symbol', 'sz', 'ts', 'volCcy24h', 'volume']

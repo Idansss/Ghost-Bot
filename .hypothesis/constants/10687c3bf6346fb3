@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\aiodns\__init__.py
+# hypothesis_version: 6.151.9
+
+[0.1, '4.0.0', ':', 'A', 'AAAA', 'ANY', 'CAA', 'CHAOS', 'CNAME', 'DNSResolver', 'HS', 'IN', 'MX', 'NAPTR', 'NONE', 'NS', 'PTR', 'SOA', 'SRV', 'TXT', '_T', '_channel', 'error', 'linux', 'sock_state_cb', 'timeout', 'win32']

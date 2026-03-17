@@ -7,6 +7,7 @@ from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Giveaway, GiveawayParticipant, GiveawayWinner
+from app.domain.giveaways import GiveawayPolicy
 
 
 class GiveawayService:
@@ -14,6 +15,7 @@ class GiveawayService:
         self.db_factory = db_factory
         self.admin_chat_ids = {int(x) for x in admin_chat_ids}
         self.min_participants = max(1, int(min_participants))
+        self.policy = GiveawayPolicy(min_participants=self.min_participants, prevent_back_to_back_winners=True)
         self.rng = random.SystemRandom()
 
     def is_admin(self, chat_id: int) -> bool:
@@ -47,13 +49,10 @@ class GiveawayService:
 
     async def _choose_winner(self, session: AsyncSession, group_chat_id: int, giveaway_id: int) -> tuple[int | None, str]:
         participants = await self._participant_ids(session, giveaway_id)
-        if len(participants) < self.min_participants:
-            return None, f"Need at least {self.min_participants} participants."
-
         last_winner = await self._last_winner(session, group_chat_id)
-        eligible = [uid for uid in participants if uid != last_winner]
+        eligible = self.policy.eligible_participants(participants=participants, last_winner=last_winner)
         if not eligible:
-            eligible = participants
+            return None, f"Need at least {self.min_participants} participants."
         return int(self.rng.choice(eligible)), "ok"
 
     async def start_giveaway(self, group_chat_id: int, admin_chat_id: int, duration_seconds: int, prize: str) -> dict:
@@ -114,6 +113,19 @@ class GiveawayService:
             return {"giveaway_id": giveaway.id, "participants": count}
 
     async def _finalize(self, session: AsyncSession, giveaway: Giveaway) -> dict:
+        # Re-check status inside the session to guard against concurrent finalization
+        # (e.g. admin manually ends giveaway at the same time the scheduler fires).
+        await session.refresh(giveaway)
+        if giveaway.status != "active":
+            return {
+                "giveaway_id": giveaway.id,
+                "chat_id": giveaway.chat_id,
+                "status": giveaway.status,
+                "winner_user_id": giveaway.winner_user_id,
+                "prize": giveaway.prize,
+                "note": "already_finalized",
+            }
+
         winner_id, note = await self._choose_winner(session, giveaway.chat_id, giveaway.id)
         participants = await self._participant_ids(session, giveaway.id)
 
@@ -156,7 +168,14 @@ class GiveawayService:
             raise PermissionError("Only configured admins can end giveaways.")
 
         async with self.db_factory() as session:
-            giveaway = await self._active_giveaway(session, group_chat_id)
+            q = await session.execute(
+                select(Giveaway)
+                .where(Giveaway.chat_id == group_chat_id, Giveaway.status == "active")
+                .order_by(Giveaway.id.desc())
+                .limit(1)
+                .with_for_update()  # Lock the row to prevent concurrent finalization
+            )
+            giveaway = q.scalar_one_or_none()
             if not giveaway:
                 raise RuntimeError("No active giveaway to end.")
             return await self._finalize(session, giveaway)
@@ -249,6 +268,7 @@ class GiveawayService:
                 select(Giveaway)
                 .where(Giveaway.status == "active", Giveaway.end_time <= now)
                 .order_by(Giveaway.end_time.asc())
+                .with_for_update(skip_locked=True)  # Only one instance claims each row
             )
             due = list(q.scalars().all())
             for giveaway in due:

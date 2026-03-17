@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Iterable
 
 from app.core.cache import RedisCache
 from app.core.http import ResilientHTTPClient
@@ -33,19 +34,19 @@ class NewsSourcesAdapter:
         if not raw:
             return None
         try:
-            return parsedate_to_datetime(raw).astimezone(timezone.utc)
-        except Exception:  # noqa: BLE001
+            return parsedate_to_datetime(raw).astimezone(UTC)
+        except Exception:
             pass
         try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
-        except Exception:  # noqa: BLE001
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(UTC)
+        except Exception:
             return None
 
     async def _fetch_rss_feed(self, url: str) -> list[dict]:
         try:
             raw = await self.http.get_text(url, headers=_RSS_AGENT)
             root = ET.fromstring(raw)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return []
 
         items: list[dict] = []
@@ -61,7 +62,7 @@ class NewsSourcesAdapter:
                         "url": (entry.findtext("link") or "").strip(),
                         "summary": (entry.findtext("description") or "").strip(),
                         "source": feed_title,
-                        "published_at": (self._parse_dt(published) or datetime.now(timezone.utc)).isoformat(),
+                        "published_at": (self._parse_dt(published) or datetime.now(UTC)).isoformat(),
                     }
                 )
         else:
@@ -84,7 +85,7 @@ class NewsSourcesAdapter:
                             or ""
                         ).strip(),
                         "source": feed_title,
-                        "published_at": (self._parse_dt(published) or datetime.now(timezone.utc)).isoformat(),
+                        "published_at": (self._parse_dt(published) or datetime.now(UTC)).isoformat(),
                     }
                 )
 
@@ -105,7 +106,7 @@ class NewsSourcesAdapter:
                     "url": item.get("url", ""),
                     "summary": "",
                     "source": "CryptoPanic",
-                    "published_at": item.get("published_at", datetime.now(timezone.utc).isoformat()),
+                    "published_at": item.get("published_at", datetime.now(UTC).isoformat()),
                 }
             )
         return rows
@@ -149,10 +150,8 @@ class NewsSourcesAdapter:
 
         stories = await self._fetch_rss_group(feeds)
         if include_cryptopanic:
-            try:
+            with contextlib.suppress(Exception):
                 stories.extend(await asyncio.wait_for(self._fetch_cryptopanic(limit=max(limit, 20)), timeout=5.0))
-            except Exception:  # noqa: BLE001
-                pass
 
         deduped = self._dedupe_stories(stories)
         await self.cache.set_json(cache_key, deduped, ttl=300)

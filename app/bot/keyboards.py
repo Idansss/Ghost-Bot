@@ -30,7 +30,6 @@ def settings_menu(settings: dict) -> InlineKeyboardMarkup:
 
     anon = "ON" if settings.get("anon_mode") else "OFF"
     formal = "ON" if settings.get("formal_mode") else "OFF"
-    profanity = settings.get("profanity_level", "light")
 
     kb.button(text=f"Anon mode: {anon}", callback_data="settings:toggle:anon_mode")
     kb.button(text=f"Formal mode: {formal}", callback_data="settings:toggle:formal_mode")

@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\market_router.py
+# hypothesis_version: 6.151.9
+
+[0.12, 200, 300, 500, 1000, 3600, '+00:00', ',', '1h', 'PIE', 'PIEVERSE', 'POWER', 'Perp', 'Spot', 'USDT', 'Z', 'asks', 'bids', 'binance', 'blofin', 'bybit', 'candles', 'empty_orderbook', 'exchange', 'funding_rate', 'get_spot_tickers_24h', 'instrument_id', 'invalid_candles', 'market_kind', 'mexc', 'non_positive_price', 'okx', 'open_interest', 'perp', 'price', 'spot', 'symbol', 'ts', 'updated_at']

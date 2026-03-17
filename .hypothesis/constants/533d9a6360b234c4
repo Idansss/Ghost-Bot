@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\openai\types\responses\computer_action_list_param.py
+# hypothesis_version: 6.151.9
+
+['Click', 'ComputerActionParam', 'DoubleClick', 'Drag', 'DragPath', 'Keypress', 'Move', 'Screenshot', 'Scroll', 'Type', 'Wait', 'back', 'click', 'double_click', 'drag', 'forward', 'keypress', 'left', 'move', 'right', 'screenshot', 'scroll', 'type', 'wait', 'wheel']

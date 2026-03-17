@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\db\models.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1.0, 100, 128, 255, '1h', 'CASCADE', 'Prize', 'SET NULL', 'active', 'alerts', 'ambiguous', 'audit_events', 'binance', 'cross', 'exchange', 'giveaway_id', 'giveaway_winners', 'giveaways', 'giveaways.id', 'indicator_snapshots', 'long', 'market_summary', 'positions', 'scheduled_reports', 'spot', 'symbol', 'timeframe', 'trade_checks', 'trade_journal', 'universe_symbols', 'user', 'user_chat_id', 'users', 'users.id', 'wallets', 'watchlists']

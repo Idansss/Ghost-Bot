@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\pydantic_settings\main.py
+# hypothesis_version: 6.151.9
+
+['-', 'T', '_', '__name__', '_cli_exit_on_error', '_cli_parse_args', '_cli_settings_source', 'case_sensitive', 'cli_avoid_json', 'cli_cmd', 'cli_enforce_required', 'cli_exit_on_error', 'cli_flag_prefix_char', 'cli_hide_none_type', 'cli_implicit_flags', 'cli_parse_args', 'cli_parse_none_str', 'cli_prefix', 'cli_prog_name', 'cli_settings_source', 'env_file', 'env_file_encoding', 'env_ignore_empty', 'env_nested_delimiter', 'env_parse_enums', 'env_parse_none_str', 'env_prefix', 'forbid', 'model_', 'secrets_dir', 'settings_']

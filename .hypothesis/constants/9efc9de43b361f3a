@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\workers\scheduler.py
+# hypothesis_version: 6.151.9
+
+['HTML', 'UTC', 'alerts_processed', 'alerts_task_failed', 'channels', 'chat_id', 'count', 'error', 'event', 'giveaways_processed', 'interval', 'scan_universe_failed', 'sent', 'symbol', 'task:alerts', 'task:broadcasts', 'task:giveaways', 'task:news', 'task:scan_indicators', 'task:scan_universe']

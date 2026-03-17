@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\solana.py
+# hypothesis_version: 6.151.9
+
+[1000000000, '...', '2.0', 'SOL', 'account', 'address', 'amount', 'blockTime', 'chain', 'data', 'encoding', 'err', 'getBalance', 'id', 'info', 'jsonParsed', 'jsonrpc', 'limit', 'method', 'mint', 'native_balance', 'native_symbol', 'params', 'parsed', 'programId', 'recent_transactions', 'resources', 'result', 'signature', 'slot', 'solana', 'symbol', 'time', 'tokenAmount', 'tokens', 'uiAmount', 'value']

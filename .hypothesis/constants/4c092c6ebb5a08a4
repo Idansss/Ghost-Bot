@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\services\watchlist.py
+# hypothesis_version: 6.151.9
+
+[0.0, 5000000, 'BTC', 'ETH', 'change', 'coins', 'direction', 'exchange', 'instrument_id', 'item', 'items', 'long', 'price', 'quote_volume', 'short', 'source_line', 'summary', 'symbol', 'title', 'updated_at', 'volume']

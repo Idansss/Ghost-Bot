@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\exchanges\utils.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1000, 1440, 10080, '12h', '12hour', '12hr', '15m', '15min', '1d', '1h', '1hour', '1hr', '1m', '1min', '1w', '2h', '2hour', '2hr', '30m', '30min', '3d', '3m', '3min', '4h', '4hour', '4hr', '5m', '5min', '60m', '6h', '6hour', '6hr', 'close', 'd', 'daily', 'day', 'dt', 'first', 'h', 'high', 'last', 'low', 'm', 'max', 'min', 'ms', 'open', 'resampled', 'resampled_from', 'right', 'source', 'sum', 'ts', 'volume', 'w', 'week', 'weekly']

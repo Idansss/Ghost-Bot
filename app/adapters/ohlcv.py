@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.adapters.market_router import MarketDataRouter
 from app.adapters.symbols import coingecko_id_for, normalize_symbol
 from app.core.cache import RedisCache
 from app.core.http import ResilientHTTPClient
-
 
 BINANCE_SUPPORTED_INTERVALS = {
     "1m",
@@ -58,7 +57,7 @@ class OHLCVAdapter:
             try:
                 routed = await self.market_router.get_ohlcv(meta.base, timeframe=tf, limit=limit)
                 candles = list(routed.get("candles", []))
-                updated = routed.get("updated_at") or datetime.now(timezone.utc).isoformat()
+                updated = routed.get("updated_at") or datetime.now(UTC).isoformat()
                 source_line = routed.get("source_line")
                 exchange = routed.get("exchange")
                 market_kind = routed.get("market_kind")
@@ -71,7 +70,7 @@ class OHLCVAdapter:
                     row["instrument_id"] = instrument_id
                 await self.cache.set_json(key, candles, ttl=60)
                 return candles
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
         try:
@@ -97,7 +96,7 @@ class OHLCVAdapter:
             ]
             await self.cache.set_json(key, candles, ttl=60)
             return candles
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass
 
         if tf not in COINGECKO_FALLBACK_INTERVALS:
@@ -140,7 +139,7 @@ class OHLCVAdapter:
             raise RuntimeError(f"OHLCV unavailable for {meta.base}")
 
         for c in candles:
-            c["fetched_at"] = datetime.now(timezone.utc).isoformat()
+            c["fetched_at"] = datetime.now(UTC).isoformat()
 
         await self.cache.set_json(key, candles, ttl=90)
         return candles

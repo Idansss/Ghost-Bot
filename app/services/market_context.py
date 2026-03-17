@@ -13,7 +13,7 @@ from app.core.ta import ema, rsi
 def _safe_float(value, default: float | None = None) -> float | None:
     try:
         return float(value)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return default
 
 
@@ -98,7 +98,7 @@ class MarketContextService:
         try:
             payload = await http.get_json(f"{base}/global")
             return _safe_float(payload.get("data", {}).get("market_cap_percentage", {}).get("btc"), None)
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     async def get_market_context(self) -> dict:

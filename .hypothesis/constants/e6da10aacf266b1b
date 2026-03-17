@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\aiogram\utils\deep_linking.py
+# hypothesis_version: 6.151.9
+
+['[^A-z0-9-]', 'create_deep_link', 'create_start_link', 'create_telegram_link', 'decode_payload', 'encode_payload', 'start', 'startgroup']

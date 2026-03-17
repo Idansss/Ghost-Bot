@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\derivatives.py
+# hypothesis_version: 6.151.9
+
+[5.0, 'binance', 'binance_perp', 'exchange', 'funding_rate', 'instrument_id', 'lastFundingRate', 'market_kind', 'openInterest', 'open_interest', 'perp', 'source', 'source_line', 'symbol', 'ts', 'unavailable', 'updated_at']

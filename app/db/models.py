@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -41,6 +51,10 @@ class Alert(Base):
     source_exchange: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     instrument_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     market_kind: Mapped[str | None] = mapped_column(String(10), nullable=True, default="spot")
+    # Extra AND-conditions e.g. [{"type":"rsi","timeframe":"1h","operator":"gt","value":60}]
+    conditions_json: Mapped[list | None] = mapped_column(JSONB, nullable=True, default=None)
+    # Idempotency key: callers may pass a unique token to prevent duplicate creation on retry
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
 
     user: Mapped[User] = relationship(back_populates="alerts")
 

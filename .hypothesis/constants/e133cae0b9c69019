@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\fastapi\openapi\models.py
+# hypothesis_version: 6.151.9
+
+['$anchor', '$comment', '$defs', '$dynamicAnchor', '$dynamicRef', '$id', '$ref', '$schema', '$vocabulary', 'Header', 'PathItem', 'SchemaOrBool', 'allow', 'apiKey', 'bearer', 'cookie', 'else', 'email', 'extra', 'format', 'header', 'http', 'if', 'in', 'not', 'oauth2', 'openIdConnect', 'path', 'query', 'schema', 'string', 'type']

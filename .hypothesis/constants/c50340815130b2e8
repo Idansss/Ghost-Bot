@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\symbols.py
+# hypothesis_version: 6.151.9
+
+['$', '-', '/', 'ADA', 'AVAX', 'BITCOIN', 'BNB', 'BTC', 'BUSD', 'DOGE', 'ETH', 'ETHEREUM', 'LINK', 'SOL', 'SOLANA', 'TRX', 'USD', 'USDC', 'USDT', 'XBT', 'XRP', '[^A-Z0-9]', '\\s+', '_', 'avalanche-2', 'binancecoin', 'bitcoin', 'cardano', 'chainlink', 'dogecoin', 'ethereum', 'ripple', 'solana', 'tron']

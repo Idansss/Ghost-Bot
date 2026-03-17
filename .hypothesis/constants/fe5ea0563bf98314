@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\adapters\exchanges\binance.py
+# hypothesis_version: 6.151.9
+
+[200, 300, 1000, 2700, '/', '/api/v3/depth', '/api/v3/klines', '/api/v3/ticker/price', '/fapi/v1/depth', '/fapi/v1/klines', '12h', '15m', '1d', '1h', '1m', '1w', '2h', '30m', '3d', '3m', '4h', '5m', '6h', 'Binance', 'PERPETUAL_DELIVERING', 'TRADING', 'USDT', 'asks', 'baseAsset', 'bids', 'binance', 'change', 'close', 'contractType', 'funding_rate', 'high', 'instrument_id', 'interval', 'lastFundingRate', 'lastPrice', 'limit', 'low', 'open', 'openInterest', 'open_interest', 'price', 'priceChangePercent', 'quoteAsset', 'quoteVolume', 'quote_volume', 'source', 'spot', 'status', 'symbol', 'symbols', 'ts', 'volume']

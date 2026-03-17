@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\AppData\Local\Packages\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\LocalCache\local-packages\Python311\site-packages\aiogram\__init__.py
+# hypothesis_version: 6.151.9
+
+['BaseMiddleware', 'Bot', 'Dispatcher', 'F', 'Router', '__api_version__', '__version__', 'enums', 'flags', 'html', 'md', 'methods', 'session', 'types']

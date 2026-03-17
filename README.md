@@ -414,6 +414,25 @@ python -m app.main
 python -m pytest -q
 ```
 
+## Dev workflow helpers
+
+Cross-platform (recommended on Windows):
+
+```bash
+python tools/dev.py ci
+python tools/dev.py run
+python tools/dev.py migrate
+python tools/dev.py makemigration -m "your message"
+```
+
+If you have `make` available:
+
+```bash
+make ci
+make run
+make migrate
+```
+
 Includes:
 
 - 30+ NLU parse cases
@@ -435,6 +454,13 @@ Includes:
 - No user API keys stored
 - Wallet scans only process public-chain data
 - Do not use outputs for doxxing, harassment, or attribution
+
+## Security and privacy docs
+
+- `SECURITY.md` - threat model + mitigations + operator checklist
+- `PRIVACY.md` - stored data + retention + deletion summary
+- `RUNBOOK.md` - deploy/rollback/migrations/backups/incident response
+- `docs/ha.md` - multi-instance / HA strategy
 
 ## Assumptions
 

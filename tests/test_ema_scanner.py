@@ -12,7 +12,7 @@ class _DummyCache:
     async def get_json(self, key: str):
         return self._store.get(key)
 
-    async def set_json(self, key: str, value, ttl: int = 0) -> None:  # noqa: ARG002
+    async def set_json(self, key: str, value, ttl: int = 0) -> None:
         self._store[key] = value
 
 
@@ -22,6 +22,7 @@ async def test_ema_scan_output_shape_from_precomputed() -> None:
         http=None,  # type: ignore[arg-type]
         cache=_DummyCache(),  # type: ignore[arg-type]
         ohlcv_adapter=None,  # type: ignore[arg-type]
+        market_router=None,  # type: ignore[arg-type]
         binance_base="https://api.binance.com",
         db_factory=None,
     )
@@ -36,7 +37,7 @@ async def test_ema_scan_output_shape_from_precomputed() -> None:
             {"symbol": "ETH", "price": 3400.0, "ema": 3410.0, "distance_pct": -0.293, "side": "below"},
         ]
 
-    async def _fake_scan_live(timeframe: str, ema_length: int, mode: str, limit: int):  # noqa: ARG001
+    async def _fake_scan_live(timeframe: str, ema_length: int, mode: str, limit: int):
         return []
 
     service._query_precomputed = _fake_precomputed  # type: ignore[method-assign]

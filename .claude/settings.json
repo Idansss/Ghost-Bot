@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"sql\\\\|SQL\\\\|inject\\\\|escape\" /c/Users/Admin/Desktop/Ghost_Bot/app/main.py /c/Users/Admin/Desktop/Ghost_Bot/app/services/*.py)",
+      "Bash(grep -n \"eval\\\\|exec\\\\|pickle\\\\|compile\" /c/Users/Admin/Desktop/Ghost_Bot/app/**/*.py)",
+      "Bash(find c:/Users/Admin/Desktop/Ghost_Bot/app -name *.py -path *migration* -o -name *.py -path *alembic*)",
+      "Bash(grep -rn \"alembic\\\\|upgrade head\" c:/Users/Admin/Desktop/Ghost_Bot/ --include=*.py --include=*.sh --include=Makefile --include=Dockerfile)",
+      "Bash(python -m pytest tests/test_alert_lifecycle.py tests/test_giveaway_race.py tests/test_multi_exchange_fallback.py tests/test_wallet_scan.py -v --tb=short)",
+      "Read(//c//**)",
+      "Bash(pip install:*)"
+    ]
+  }
+}

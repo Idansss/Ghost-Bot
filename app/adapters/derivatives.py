@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.adapters.market_router import MarketDataRouter
 from app.adapters.symbols import normalize_symbol
@@ -38,7 +38,7 @@ class DerivativesAdapter:
             "exchange": None,
             "market_kind": "perp",
             "instrument_id": None,
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
         }
 
         if self.market_router:
@@ -59,7 +59,7 @@ class DerivativesAdapter:
                     )
                     await self.cache.set_json(key, payload, ttl=60)
                     return payload
-            except Exception:  # noqa: BLE001
+            except Exception:
                 pass
 
         premium_task = asyncio.wait_for(
