@@ -1,0 +1,4 @@
+# file: C:\Users\Admin\Desktop\Ghost_Bot\app\domain\alerts.py
+# hypothesis_version: 6.151.9
+
+['above', 'below', 'cross', 'ema', 'gt', 'gte', 'lt', 'lte', 'operator', 'period', 'rsi', 'rsi14', 'type', 'value']
