@@ -1406,6 +1406,20 @@ def _extract_symbol(params: dict) -> str | None:
     return None
 
 
+def _normalize_symbol_value(val) -> str | None:
+    """Best-effort normalization for symbol-like values coming from multiple sources."""
+    if val is None:
+        return None
+    if isinstance(val, str):
+        s = val.strip()
+        return s.upper().lstrip("$") if s else None
+    # NLU may pass a Symbol-like object with `.base`
+    base = getattr(val, "base", None)
+    if isinstance(base, str) and base.strip():
+        return base.strip().upper().lstrip("$")
+    return None
+
+
 async def _llm_route_message(user_text: str) -> dict | None:
     hub = _require_hub()
     if not hub.llm_client:
@@ -1707,7 +1721,7 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
         return True
 
     if intent == "alert_create":
-        symbol = _extract_symbol(params)
+        symbol = _normalize_symbol_value(_extract_symbol(params) or params.get("symbol") or params.get("asset"))
         price = _as_float(params.get("price") or params.get("target_price"))
 
         # Fallback: parse symbol/price directly from the raw text if router missed them
@@ -1715,7 +1729,7 @@ async def _handle_routed_intent(message: Message, settings: dict, route: dict) -
             from app.core.nlu import _extract_prices, _extract_symbols
             if not symbol:
                 syms = _extract_symbols(raw_text)
-                symbol = syms[0] if syms else None
+                symbol = _normalize_symbol_value(syms[0]) if syms else None
             if price is None:
                 pxs = _extract_prices(raw_text)
                 price = pxs[0] if pxs else None
