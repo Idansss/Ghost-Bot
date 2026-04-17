@@ -83,6 +83,7 @@ async def _sync_bot_commands(bot: Bot) -> None:
         ("chart", "Send candlestick chart image"),
         ("cycle", "Cycle check"),
         ("ema", "EMA scan (near EMA levels)"),
+        ("feedback", "Admin: feedback summary"),
         ("findpair", "Find coin by price / partial name"),
         ("giveaway", "Admin: start/end/reroll giveaways"),
         ("heatmap", "Orderbook heatmap snapshot"),
@@ -101,6 +102,8 @@ async def _sync_bot_commands(bot: Bot) -> None:
         ("pnl", "PnL calculator (entry/exit/size/lev)"),
         ("position", "Track positions and unrealized PnL"),
         ("price", "Latest price + 24h stats"),
+        ("quality", "Admin: quality dashboard"),
+        ("replystats", "Admin: reply analytics"),
         ("report", "Scheduled daily market summary"),
         ("rsi", "RSI scan (overbought/oversold)"),
         ("scan", "Wallet scan (solana/tron address)"),
@@ -530,9 +533,13 @@ def create_app() -> FastAPI:
                     )
                 )
                 r2 = await session.execute(text("SELECT COUNT(*) FROM alerts WHERE status = 'active'"))
+            quality_summary = {}
+            if getattr(app.state, "hub", None) and getattr(app.state.hub, "audit_service", None):
+                quality_summary = await app.state.hub.audit_service.quality_summary(hours=24)
             return {
                 "dau": r1.scalar() or 0,
                 "active_alerts": r2.scalar() or 0,
+                "quality": quality_summary,
                 "ts": datetime.now(UTC).isoformat(),
             }
         except Exception as e:

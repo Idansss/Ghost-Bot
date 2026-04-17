@@ -50,6 +50,12 @@ ABUSE_ACTIONS_TOTAL = Counter(
     ["action"],
 )
 
+FEEDBACK_EVENTS_TOTAL = Counter(
+    "ghost_feedback_events_total",
+    "User feedback events captured from bot replies",
+    ["sentiment", "source", "reason"],
+)
+
 
 def record_feature(feature: str, *, ok: bool) -> None:
     FEATURE_RUNS_TOTAL.labels(feature=feature, outcome="ok" if ok else "error").inc()
@@ -91,6 +97,10 @@ def record_abuse(action: str) -> None:
     ABUSE_ACTIONS_TOTAL.labels(action=action).inc()
 
 
+def record_feedback(*, sentiment: str, source: str, reason: str) -> None:
+    FEEDBACK_EVENTS_TOTAL.labels(sentiment=sentiment, source=source, reason=reason).inc()
+
+
 def metrics_response():
     return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
 
@@ -116,4 +126,3 @@ def metrics_middleware_factory(app_name: str = "ghost") -> Callable:
             HTTP_REQUEST_LATENCY_SECONDS.labels(method=method, path=path).observe(elapsed)
 
     return middleware
-
